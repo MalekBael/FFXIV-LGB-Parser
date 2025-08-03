@@ -1,6 +1,8 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
+using LgbParser;
 
 namespace LgbParser
 {
@@ -8,465 +10,663 @@ namespace LgbParser
     {
         static void Main(string[] args)
         {
-            Console.WriteLine("LGB Parser - Starting...");
+            Console.WriteLine("LGB Parser Tool v2.0");
+            Console.WriteLine("====================");
+            Console.WriteLine($"Current Date/Time: 2025-08-02 01:57:55 UTC");
+            Console.WriteLine($"User: MalekBael");
+            Console.WriteLine();
 
-            if (args.Length < 1)
+            if (args.Length == 0)
             {
-                ShowUsage();
+                ShowHelp();
                 return;
             }
 
             try
             {
-                if (args[0] == "--game")
+                // Check if this is game mode (direct FFXIV installation parsing)
+                if (args.Contains("--game"))
                 {
-                    if (args.Length < 2)
-                    {
-                        Console.WriteLine("Error: Game installation path required.");
-                        ShowUsage();
-                        return;
-                    }
-
                     HandleGameMode(args);
                 }
                 else
                 {
-                    // Original file mode
                     HandleFileMode(args);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Fatal Error: {ex.Message}");
-                if (ex.InnerException != null)
-                {
-                    Console.WriteLine($"Inner Exception: {ex.InnerException.Message}");
-                }
-                Console.WriteLine("Press any key to exit...");
-                Console.ReadKey();
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine("\nFor help, run without arguments or use --help");
+                Environment.Exit(1);
             }
         }
 
-        static void ShowUsage()
+        static void ShowHelp()
         {
-            Console.WriteLine("LGB Parser Usage:");
-            Console.WriteLine("================");
+            Console.WriteLine("LGB Parser - Extract data from Final Fantasy XIV LGB files");
             Console.WriteLine();
-            Console.WriteLine("File Mode:");
-            Console.WriteLine("  lgb-parser <input.lgb> <output.txt> [format]              - Parse single extracted file");
-            Console.WriteLine("  lgb-parser <input_folder> [output_folder] [format]       - Parse all LGB files in folder");
+            Console.WriteLine("FILE MODE (Pre-extracted LGB files):");
+            Console.WriteLine("  lgb-parser <input.lgb> <output.txt> [format]              - Parse single file");
+            Console.WriteLine("  lgb-parser <input_folder> [output_folder] [format]       - Parse folder (batch)");
             Console.WriteLine();
-            Console.WriteLine("Game Mode:");
-            Console.WriteLine("  lgb-parser --game <game_path> <lgb_file_path> [output]    - Parse from game installation");
-            Console.WriteLine("  lgb-parser --game <game_path> --batch [output_folder]     - Parse all LGB files");  // CHANGED
-            Console.WriteLine("  lgb-parser --game <game_path> --list                      - List available LGB files");
-            Console.WriteLine("  lgb-parser --game <game_path> --list-zones                - List available zones");
-            Console.WriteLine("  lgb-parser --game <game_path> --list-types                - List available file types");
-            Console.WriteLine("  lgb-parser --game <game_path> --batch-zone <zone>         - Parse files from specific zone");
-            Console.WriteLine("  lgb-parser --game <game_path> --batch-type <type>         - Parse files of specific type");
+            Console.WriteLine("GAME MODE (Direct FFXIV installation):");
+            Console.WriteLine("  lgb-parser --game <game_path> --list                     - List available LGB files");
+            Console.WriteLine("  lgb-parser --game <game_path> --list-zones               - List available zones");
+            Console.WriteLine("  lgb-parser --game <game_path> --list-types               - List available file types");
+            Console.WriteLine("  lgb-parser --game <game_path> --batch [output_folder]    - Parse all LGB files");
+            Console.WriteLine("  lgb-parser --game <game_path> --batch-zone <zone> [output_folder] - Parse zone files");
+            Console.WriteLine("  lgb-parser --game <game_path> --batch-type <type> [output_folder] - Parse type files");
+            Console.WriteLine("  lgb-parser --game <game_path> --analyze <lgb_file_path>  - Detailed analysis of specific file");
+            Console.WriteLine("  lgb-parser --game <game_path> <lgb_file_path> [output] [format] - Parse single game file");
             Console.WriteLine();
-            Console.WriteLine("Formats: txt (default), json");
-            Console.WriteLine("Game path should point to FFXIV installation directory (contains 'game' folder)");
+            Console.WriteLine("FORMATS:");
+            Console.WriteLine("  text (default) - Human-readable text format");
+            Console.WriteLine("  json          - JSON format");
             Console.WriteLine();
-            Console.WriteLine("Examples:");
-            Console.WriteLine("  lgb-parser bg.lgb output.txt");
-            Console.WriteLine("  lgb-parser C:\\extracted_lgb_files parsed_output");
-            Console.WriteLine("  lgb-parser --game \"C:\\Program Files (x86)\\SquareEnix\\FINAL FANTASY XIV - A Realm Reborn\" --list");
+            Console.WriteLine("EXAMPLES:");
+            Console.WriteLine("  File Mode:");
+            Console.WriteLine("    lgb-parser bg.lgb output.txt");
+            Console.WriteLine("    lgb-parser extracted_files/ parsed_output/ json");
+            Console.WriteLine();
+            Console.WriteLine("  Game Mode:");
+            Console.WriteLine("    lgb-parser --game \"C:\\Program Files (x86)\\SquareEnix\\FINAL FANTASY XIV - A Realm Reborn\" --list");
+            Console.WriteLine("    lgb-parser --game \"C:\\FFXIV\" --batch-zone sea_s1 limsa_files");
+            Console.WriteLine("    lgb-parser --game \"C:\\FFXIV\" --batch-type planner planner_analysis");
+            Console.WriteLine("    lgb-parser --game \"C:\\FFXIV\" --analyze bg/ffxiv/sea_s1/fld/s1f1/level/planner.lgb");
+            Console.WriteLine();
+            Console.WriteLine("SUPPORTED ZONES: air_a1, fst_f1, lak_l1, ocn_o1, roc_r1, sea_s1, wil_w1, zon_z1");
+            Console.WriteLine("SUPPORTED TYPES: bg, planevent, planlive, planmap, planner, sound, vfx");
+            Console.WriteLine();
+            Console.WriteLine("NOTE: planner.lgb files use enhanced parsing due to compatibility issues");
         }
 
         static void HandleGameMode(string[] args)
         {
-            string gamePath = args[1];
-            Console.WriteLine($"Game mode - Game path: {gamePath}");
-
-            try
+            var gameIndex = Array.IndexOf(args, "--game");
+            if (gameIndex == -1 || gameIndex >= args.Length - 1)
             {
-                using var gameReader = new GameLgbReader(gamePath);
-                Console.WriteLine("GameReader initialized successfully.");
+                Console.WriteLine("Error: --game requires a path to FFXIV installation");
+                return;
+            }
 
-                if (args.Length > 2)
+            string gamePath = args[gameIndex + 1];
+
+            // Validate game path
+            if (!Directory.Exists(gamePath))
+            {
+                Console.WriteLine($"Error: Game path does not exist: {gamePath}");
+                return;
+            }
+
+            var sqpackPath = Path.Combine(gamePath, "game", "sqpack");
+            if (!Directory.Exists(sqpackPath))
+            {
+                Console.WriteLine($"Error: FFXIV sqpack directory not found at: {sqpackPath}");
+                Console.WriteLine("Please ensure the path points to the root FFXIV installation directory.");
+                return;
+            }
+
+            Console.WriteLine($"Using FFXIV installation: {gamePath}");
+            Console.WriteLine($"SqPack directory: {sqpackPath}");
+            Console.WriteLine();
+
+            using var reader = new GameLgbReader(gamePath);
+
+            // Handle different game mode commands
+            if (args.Contains("--list"))
+            {
+                HandleListCommand(reader);
+            }
+            else if (args.Contains("--list-zones"))
+            {
+                HandleListZonesCommand(reader);
+            }
+            else if (args.Contains("--list-types"))
+            {
+                HandleListTypesCommand(reader);
+            }
+            else if (args.Contains("--batch"))
+            {
+                HandleBatchCommand(reader, args);
+            }
+            else if (args.Contains("--batch-zone"))
+            {
+                HandleBatchZoneCommand(reader, args);
+            }
+            else if (args.Contains("--batch-type"))
+            {
+                HandleBatchTypeCommand(reader, args);
+            }
+            else if (args.Contains("--analyze"))
+            {
+                HandleAnalyzeCommand(reader, args);
+            }
+            else
+            {
+                // Single file parsing from game
+                HandleSingleGameFileCommand(reader, args, gameIndex);
+            }
+        }
+
+        static void HandleListCommand(GameLgbReader reader)
+        {
+            Console.WriteLine("Discovering available LGB files...");
+            var files = reader.GetAvailableLgbFiles();
+
+            Console.WriteLine($"\nFound {files.Count} LGB files:");
+            Console.WriteLine("================================================================================");
+
+            var groupedFiles = files.GroupBy(f => {
+                var parts = f.Split('/');
+                return parts.Length >= 3 ? parts[2] : "Unknown"; // Zone
+            }).OrderBy(g => g.Key);
+
+            foreach (var group in groupedFiles)
+            {
+                Console.WriteLine($"\n{group.Key.ToUpperInvariant()} ({group.Count()} files):");
+                foreach (var file in group.Take(10)) // Show first 10 per zone
                 {
-                    string command = args[2];
-                    Console.WriteLine($"Command: {command}");
-
-                    switch (command)
-                    {
-                        case "--list":
-                            HandleListCommand(gameReader);
-                            break;
-
-                        case "--list-zones":
-                            HandleListZonesCommand(gameReader);
-                            break;
-
-                        case "--list-types":
-                            HandleListTypesCommand(gameReader);
-                            break;
-
-                        case "--batch":
-                            string outputFolder = args.Length > 3 ? args[3] : "parsed_lgb_output";
-                            HandleBatchCommand(gameReader, outputFolder);
-                            break;
-
-                        case "--batch-zone":
-                            if (args.Length < 4)
-                            {
-                                Console.WriteLine("Error: Zone name required for --batch-zone option.");
-                                return;
-                            }
-                            string zoneName = args[3];
-                            string zoneOutputFolder = args.Length > 4 ? args[4] : $"parsed_lgb_{zoneName}";
-                            HandleBatchZoneCommand(gameReader, zoneName, zoneOutputFolder);
-                            break;
-
-                        case "--batch-type":
-                            if (args.Length < 4)
-                            {
-                                Console.WriteLine("Error: File type required for --batch-type option.");
-                                return;
-                            }
-                            string fileType = args[3];
-                            string typeOutputFolder = args.Length > 4 ? args[4] : $"parsed_lgb_{fileType}";
-                            HandleBatchTypeCommand(gameReader, fileType, typeOutputFolder);
-                            break;
-
-                        default:
-                            // Single file parsing from game
-                            HandleSingleGameFile(gameReader, args);
-                            break;
-                    }
+                    Console.WriteLine($"  {file}");
                 }
-                else
+                if (group.Count() > 10)
                 {
-                    Console.WriteLine("Error: Command required for game mode.");
-                    ShowUsage();
+                    Console.WriteLine($"  ... and {group.Count() - 10} more");
                 }
             }
-            catch (Exception ex)
+        }
+
+        static void HandleListZonesCommand(GameLgbReader reader)
+        {
+            Console.WriteLine("Analyzing available zones...");
+            var files = reader.GetAvailableLgbFiles();
+
+            var zoneStats = files
+                .GroupBy(f => {
+                    var parts = f.Split('/');
+                    return parts.Length >= 3 ? parts[2] : "Unknown";
+                })
+                .Select(g => new { Zone = g.Key, Count = g.Count() })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+
+            Console.WriteLine($"\nAvailable Zones ({zoneStats.Count} total):");
+            Console.WriteLine("================================================================================");
+            Console.WriteLine($"{"Zone",-15} {"Files",-10} {"Description"}");
+            Console.WriteLine(new string('-', 60));
+
+            var zoneDescriptions = new Dictionary<string, string>
             {
-                Console.WriteLine($"Error in game mode: {ex.Message}");
-                throw;
+                ["air_a1"] = "The Mist (Airship zones)",
+                ["fst_f1"] = "East Shroud / Gridania areas",
+                ["lak_l1"] = "Mor Dhona / Lake areas",
+                ["ocn_o1"] = "Ocean/Island zones",
+                ["roc_r1"] = "Coerthas / Rocky areas",
+                ["sea_s1"] = "La Noscea / Limsa Lominsa",
+                ["wil_w1"] = "Black Shroud / Forest areas",
+                ["zon_z1"] = "Thanalan / Desert zones"
+            };
+
+            foreach (var zone in zoneStats)
+            {
+                var description = zoneDescriptions.ContainsKey(zone.Zone)
+                    ? zoneDescriptions[zone.Zone]
+                    : "Unknown zone";
+                Console.WriteLine($"{zone.Zone,-15} {zone.Count,-10} {description}");
             }
         }
 
-        static void HandleListCommand(GameLgbReader gameReader)
+        static void HandleListTypesCommand(GameLgbReader reader)
         {
-            Console.WriteLine("Getting all available LGB files...");
-            var allFiles = gameReader.GetAvailableLgbFiles();
+            Console.WriteLine("Analyzing available file types...");
+            var files = reader.GetAvailableLgbFiles();
 
-            Console.WriteLine($"\nFound {allFiles.Count} available LGB files:");
-            foreach (var file in allFiles.Take(20)) // Show first 20
+            var typeStats = files
+                .GroupBy(f => {
+                    var fileName = Path.GetFileNameWithoutExtension(f);
+                    return fileName;
+                })
+                .Select(g => new { Type = g.Key, Count = g.Count() })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+
+            Console.WriteLine($"\nAvailable File Types ({typeStats.Count} total):");
+            Console.WriteLine("================================================================================");
+            Console.WriteLine($"{"Type",-15} {"Files",-10} {"Description",-30} {"Status"}");
+            Console.WriteLine(new string('-', 80));
+
+            var typeDescriptions = new Dictionary<string, (string desc, string status)>
             {
-                Console.WriteLine($"  {file}");
-            }
-            if (allFiles.Count > 20)
+                ["bg"] = ("Background objects, terrain, props", "✅ Stable"),
+                ["planevent"] = ("Event triggers and interactions", "✅ Stable"),
+                ["planmap"] = ("Map/navigation data", "✅ Stable"),
+                ["planlive"] = ("Dynamic/live event data", "✅ Stable"),
+                ["sound"] = ("Audio zones and sound triggers", "✅ Stable"),
+                ["vfx"] = ("Visual effects placement", "✅ Stable"),
+                ["planner"] = ("Layout planning data", "🔧 Enhanced parsing")
+            };
+
+            foreach (var type in typeStats)
             {
-                Console.WriteLine($"  ... and {allFiles.Count - 20} more files");
+                var (description, status) = typeDescriptions.ContainsKey(type.Type)
+                    ? typeDescriptions[type.Type]
+                    : ("Unknown file type", "❓ Unknown");
+                Console.WriteLine($"{type.Type,-15} {type.Count,-10} {description,-30} {status}");
             }
         }
 
-        static void HandleListZonesCommand(GameLgbReader gameReader)
+        static void HandleBatchCommand(GameLgbReader reader, string[] args)
         {
-            Console.WriteLine("Available zones:");
-            var zones = new[] { "sea_s1", "wil_w1", "fst_f1", "lak_l1", "roc_r1", "zon_z1", "air_a1", "ocn_o1" };
-            foreach (var zone in zones)
-            {
-                var zoneFiles = gameReader.GetLgbFilesByZone(zone);
-                Console.WriteLine($"  {zone}: {zoneFiles.Count} files");
-            }
-        }
+            string outputFolder = "lgb_output";
 
-        static void HandleListTypesCommand(GameLgbReader gameReader)
-        {
-            Console.WriteLine("Available LGB file types:");
-            var types = new[] { "bg", "planevent", "planmap", "planlive", "sound", "vfx", "planner" };
-            foreach (var type in types)
+            // Check if output folder is specified
+            var batchIndex = Array.IndexOf(args, "--batch");
+            if (batchIndex < args.Length - 1 && !args[batchIndex + 1].StartsWith("--"))
             {
-                var typeFiles = gameReader.GetLgbFilesByType(type);
-                Console.WriteLine($"  {type}: {typeFiles.Count} files");
+                outputFolder = args[batchIndex + 1];
             }
-        }
 
-        static void HandleBatchCommand(GameLgbReader gameReader, string outputFolder)
-        {
+            Console.WriteLine($"Batch processing all LGB files to: {outputFolder}");
+            Console.WriteLine("This may take several minutes...");
+            Console.WriteLine();
+
+            var results = reader.ParseAllLgbFiles();
+
             Directory.CreateDirectory(outputFolder);
 
-            Console.WriteLine("Parsing all LGB files from game installation...");  // CHANGED
-            Console.WriteLine("This will maintain the original folder structure.");
-
-            // Parse ALL available LGB files, not just a sample
-            var results = gameReader.ParseAllLgbFiles(); // Parse all files, no limit
-
-            IExporter textExporter = new TextExporter();
-
+            int exported = 0;
             foreach (var kvp in results)
             {
                 try
                 {
-                    // Convert game path to file system path and preserve structure
-                    string gamePath = kvp.Key; // e.g., "bg/ffxiv/air_a1/evt/a1e2/level/bg.lgb"
+                    var relativePath = kvp.Key.Replace('/', Path.DirectorySeparatorChar);
+                    var outputPath = Path.Combine(outputFolder, relativePath + ".txt");
 
-                    // Convert forward slashes to backslashes for Windows
-                    string relativePath = gamePath.Replace('/', Path.DirectorySeparatorChar);
+                    Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
 
-                    // Create the full output path preserving directory structure
-                    string outputPath = Path.Combine(outputFolder, relativePath);
+                    // Use TextExporter correctly - it takes (data, outputPath) and returns void
+                    var exporter = new TextExporter();
+                    exporter.Export(kvp.Value, outputPath);
 
-                    // Change extension to .txt
-                    outputPath = Path.ChangeExtension(outputPath, ".txt");
-
-                    // Ensure the directory exists
-                    string outputDir = Path.GetDirectoryName(outputPath);
-                    if (!string.IsNullOrEmpty(outputDir))
-                    {
-                        Directory.CreateDirectory(outputDir);
-                    }
-
-                    // Export the file
-                    textExporter.Export(kvp.Value, outputPath);
-                    Console.WriteLine($"✓ Exported: {outputPath}");
+                    exported++;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"✗ Failed to export {kvp.Key}: {ex.Message}");
+                    Console.WriteLine($"Failed to export {kvp.Key}: {ex.Message}");
                 }
             }
 
-            Console.WriteLine($"\nProcessed {results.Count} files with preserved folder structure.");
-            Console.WriteLine($"Output directory: {outputFolder}");
+            Console.WriteLine($"\nBatch processing complete!");
+            Console.WriteLine($"Exported {exported} files to: {outputFolder}");
         }
 
-        static void HandleBatchZoneCommand(GameLgbReader gameReader, string zoneName, string outputFolder)
+        static void HandleBatchZoneCommand(GameLgbReader reader, string[] args)
         {
-            Directory.CreateDirectory(outputFolder);
-
-            Console.WriteLine($"Parsing all LGB files from zone '{zoneName}' with preserved folder structure...");
-
-            var zoneResults = gameReader.ParseLgbFilesByZone(zoneName);
-            IExporter zoneExporter = new TextExporter();
-
-            foreach (var kvp in zoneResults)
+            var zoneIndex = Array.IndexOf(args, "--batch-zone");
+            if (zoneIndex >= args.Length - 1)
             {
-                try
-                {
-                    // Preserve folder structure for zone files too
-                    string gamePath = kvp.Key;
-                    string relativePath = gamePath.Replace('/', Path.DirectorySeparatorChar);
-                    string outputPath = Path.Combine(outputFolder, relativePath);
-                    outputPath = Path.ChangeExtension(outputPath, ".txt");
-
-                    string outputDir = Path.GetDirectoryName(outputPath);
-                    if (!string.IsNullOrEmpty(outputDir))
-                    {
-                        Directory.CreateDirectory(outputDir);
-                    }
-
-                    zoneExporter.Export(kvp.Value, outputPath);
-                    Console.WriteLine($"✓ Exported: {outputPath}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"✗ Failed to export {kvp.Key}: {ex.Message}");
-                }
-            }
-
-            Console.WriteLine($"\nProcessed {zoneResults.Count} files from zone '{zoneName}' with preserved folder structure.");
-            Console.WriteLine($"Output directory: {outputFolder}");
-        }
-
-        static void HandleBatchTypeCommand(GameLgbReader gameReader, string fileType, string outputFolder)
-        {
-            Directory.CreateDirectory(outputFolder);
-
-            Console.WriteLine($"Parsing all {fileType} LGB files with preserved folder structure...");
-
-            var typeResults = gameReader.ParseLgbFilesByType(fileType);
-            IExporter typeExporter = new TextExporter();
-
-            foreach (var kvp in typeResults)
-            {
-                try
-                {
-                    // Preserve folder structure for type files too
-                    string gamePath = kvp.Key;
-                    string relativePath = gamePath.Replace('/', Path.DirectorySeparatorChar);
-                    string outputPath = Path.Combine(outputFolder, relativePath);
-                    outputPath = Path.ChangeExtension(outputPath, ".txt");
-
-                    string outputDir = Path.GetDirectoryName(outputPath);
-                    if (!string.IsNullOrEmpty(outputDir))
-                    {
-                        Directory.CreateDirectory(outputDir);
-                    }
-
-                    typeExporter.Export(kvp.Value, outputPath);
-                    Console.WriteLine($"✓ Exported: {outputPath}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"✗ Failed to export {kvp.Key}: {ex.Message}");
-                }
-            }
-
-            Console.WriteLine($"\nProcessed {typeResults.Count} {fileType} files with preserved folder structure.");
-            Console.WriteLine($"Output directory: {outputFolder}");
-        }
-
-        static void HandleSingleGameFile(GameLgbReader gameReader, string[] args)
-        {
-            if (args.Length < 3)
-            {
-                Console.WriteLine("Error: LGB file path required for single file parsing.");
+                Console.WriteLine("Error: --batch-zone requires a zone name");
                 return;
             }
 
-            // Single file parsing from game
-            string lgbFilePath = args[2];
-            string singleOutputPath = args.Length > 3 ? args[3] : lgbFilePath.Replace("/", "_") + ".txt";
-            string format = args.Length > 4 ? args[4] : "txt";
+            string zoneName = args[zoneIndex + 1];
+            string outputFolder = $"zone_{zoneName}_output";
 
-            Console.WriteLine($"Parsing LGB file from game: {lgbFilePath}");
-
-            var lgbData = gameReader.ParseLgbFile(lgbFilePath);
-
-            IExporter gameExporter = format.ToLower() switch
+            // Check if output folder is specified
+            if (zoneIndex < args.Length - 2 && !args[zoneIndex + 2].StartsWith("--"))
             {
-                "json" => new JsonExporter(),
-                _ => new TextExporter()
-            };
+                outputFolder = args[zoneIndex + 2];
+            }
 
-            gameExporter.Export(lgbData, singleOutputPath);
-            Console.WriteLine($"Successfully exported to: {singleOutputPath}");
+            Console.WriteLine($"Batch processing zone '{zoneName}' to: {outputFolder}");
+
+            var results = reader.ParseLgbFilesByZone(zoneName);
+
+            Directory.CreateDirectory(outputFolder);
+
+            int exported = 0;
+            foreach (var kvp in results)
+            {
+                try
+                {
+                    var relativePath = kvp.Key.Replace('/', Path.DirectorySeparatorChar);
+                    var outputPath = Path.Combine(outputFolder, relativePath + ".txt");
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+
+                    var exporter = new TextExporter();
+                    exporter.Export(kvp.Value, outputPath);
+
+                    exported++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to export {kvp.Key}: {ex.Message}");
+                }
+            }
+
+            Console.WriteLine($"\nZone processing complete!");
+            Console.WriteLine($"Exported {exported} files to: {outputFolder}");
+        }
+
+        static void HandleBatchTypeCommand(GameLgbReader reader, string[] args)
+        {
+            var typeIndex = Array.IndexOf(args, "--batch-type");
+            if (typeIndex >= args.Length - 1)
+            {
+                Console.WriteLine("Error: --batch-type requires a file type");
+                return;
+            }
+
+            string fileType = args[typeIndex + 1];
+            string outputFolder = $"type_{fileType}_output";
+
+            // Check if output folder is specified
+            if (typeIndex < args.Length - 2 && !args[typeIndex + 2].StartsWith("--"))
+            {
+                outputFolder = args[typeIndex + 2];
+            }
+
+            Console.WriteLine($"Batch processing '{fileType}' files to: {outputFolder}");
+
+            var results = reader.ParseLgbFilesByType(fileType);
+
+            Directory.CreateDirectory(outputFolder);
+
+            int exported = 0;
+            foreach (var kvp in results)
+            {
+                try
+                {
+                    var relativePath = kvp.Key.Replace('/', Path.DirectorySeparatorChar);
+                    var outputPath = Path.Combine(outputFolder, relativePath + ".txt");
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+
+                    var exporter = new TextExporter();
+                    exporter.Export(kvp.Value, outputPath);
+
+                    exported++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to export {kvp.Key}: {ex.Message}");
+                }
+            }
+
+            Console.WriteLine($"\nType processing complete!");
+            Console.WriteLine($"Exported {exported} files to: {outputFolder}");
+        }
+
+        static void HandleAnalyzeCommand(GameLgbReader reader, string[] args)
+        {
+            var analyzeIndex = Array.IndexOf(args, "--analyze");
+            if (analyzeIndex >= args.Length - 1)
+            {
+                Console.WriteLine("Error: --analyze requires an LGB file path");
+                return;
+            }
+
+            string lgbFilePath = args[analyzeIndex + 1];
+
+            Console.WriteLine($"Detailed Analysis of LGB File");
+            Console.WriteLine("================================================================================");
+            Console.WriteLine($"File: {lgbFilePath}");
+            Console.WriteLine($"Analysis Time: 2025-08-02 01:57:55 UTC");
+            Console.WriteLine($"Analyzed By: MalekBael");
+            Console.WriteLine();
+
+            try
+            {
+                var data = reader.ParseLgbFile(lgbFilePath);
+
+                // Save detailed analysis to file first
+                var safeFileName = lgbFilePath.Replace('/', '_').Replace('\\', '_');
+                var outputPath = $"analysis_{safeFileName}_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
+
+                // Create detailed analysis content
+                var detailedAnalysis = $"LGB File Detailed Analysis\n" +
+                                     $"=========================\n" +
+                                     $"File: {lgbFilePath}\n" +
+                                     $"Analysis Time: 2025-08-02 01:57:55 UTC\n" +
+                                     $"Analyzed By: MalekBael\n" +
+                                     $"Tool Version: LGB Parser v2.0\n\n";
+
+                // Write the header first
+                File.WriteAllText(outputPath, detailedAnalysis);
+
+                // Use TextExporter to append the main analysis
+                var exporter = new TextExporter();
+                exporter.Export(data, outputPath + ".temp");
+
+                // Combine the files
+                var analysisContent = File.ReadAllText(outputPath + ".temp");
+                File.AppendAllText(outputPath, analysisContent);
+                File.Delete(outputPath + ".temp");
+
+                // Also display to console
+                Console.WriteLine(File.ReadAllText(outputPath));
+
+                Console.WriteLine($"\nDetailed analysis saved to: {outputPath}");
+
+                // If this is a planner file, show additional technical details
+                if (lgbFilePath.Contains("planner.lgb"))
+                {
+                    Console.WriteLine("\n🔧 PLANNER FILE ANALYSIS");
+                    Console.WriteLine("========================");
+                    Console.WriteLine("This file used enhanced parsing due to Lumina compatibility issues.");
+                    Console.WriteLine("Enhanced features used:");
+                    Console.WriteLine("  - Raw binary file analysis");
+                    Console.WriteLine("  - Hex dump interpretation");
+                    Console.WriteLine("  - Fallback parsing strategies");
+                    Console.WriteLine("  - Special error handling for negative array counts");
+
+                    if (data.LayerGroups.Any())
+                    {
+                        var firstLayer = data.LayerGroups.First();
+                        if (firstLayer.InstanceObjects.Any())
+                        {
+                            var firstObject = firstLayer.InstanceObjects.First();
+                            if (firstObject.ObjectData.ContainsKey("FullHexDump"))
+                            {
+                                Console.WriteLine($"\nRaw file hex data: {firstObject.ObjectData["FullHexDump"]}");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Analysis failed: {ex.Message}");
+                Console.WriteLine($"\nError Details:");
+                Console.WriteLine($"Type: {ex.GetType().Name}");
+                Console.WriteLine($"Message: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner Exception: {ex.InnerException.Message}");
+                }
+                Console.WriteLine($"\nStack Trace:");
+                Console.WriteLine(ex.StackTrace);
+            }
+        }
+
+        static void HandleSingleGameFileCommand(GameLgbReader reader, string[] args, int gameIndex)
+        {
+            if (gameIndex >= args.Length - 2)
+            {
+                Console.WriteLine("Error: Single file parsing requires an LGB file path");
+                return;
+            }
+
+            string lgbFilePath = args[gameIndex + 2];
+            string outputPath = args.Length > gameIndex + 3 ? args[gameIndex + 3] : null;
+            string format = args.Length > gameIndex + 4 ? args[gameIndex + 4] : "text";
+
+            if (string.IsNullOrEmpty(outputPath))
+            {
+                var fileName = Path.GetFileNameWithoutExtension(lgbFilePath);
+                outputPath = $"{fileName}.txt";
+            }
+
+            Console.WriteLine($"Parsing single file: {lgbFilePath}");
+            Console.WriteLine($"Output: {outputPath}");
+            Console.WriteLine($"Format: {format}");
+            Console.WriteLine();
+
+            try
+            {
+                var data = reader.ParseLgbFile(lgbFilePath);
+
+                if (format.ToLower() == "json")
+                {
+                    var jsonExporter = new JsonExporter();
+                    jsonExporter.Export(data, outputPath);
+                }
+                else
+                {
+                    var textExporter = new TextExporter();
+                    textExporter.Export(data, outputPath);
+                }
+
+                Console.WriteLine($"✅ Successfully parsed and exported to: {outputPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Failed to parse file: {ex.Message}");
+                Environment.Exit(1);
+            }
         }
 
         static void HandleFileMode(string[] args)
         {
+            if (args.Length < 2)
+            {
+                Console.WriteLine("Error: File mode requires at least 2 arguments");
+                ShowHelp();
+                return;
+            }
+
             string inputPath = args[0];
-            Console.WriteLine($"File mode - Input path: {inputPath}");
+            string outputPath = args[1];
+            string format = args.Length > 2 ? args[2] : "text";
 
-            if (File.Exists(inputPath))
-            {
-                if (args.Length < 2)
-                {
-                    Console.WriteLine("Error: Output file required for single file mode.");
-                    return;
-                }
-                ParseSingleFile(inputPath, args[1], args.Length > 2 ? args[2] : "txt");
-            }
-            else if (Directory.Exists(inputPath))
-            {
-                string outputFolder = args.Length > 1 ? args[1] : Path.Combine(inputPath, "parsed_output");
-                string format = args.Length > 2 ? args[2] : "txt";
-                ParseFolderRecursive(inputPath, outputFolder, format);
-            }
-            else
-            {
-                Console.WriteLine($"Error: Input path '{inputPath}' not found.");
-            }
-        }
-
-        static void ParseSingleFile(string inputFile, string outputFile, string format)
-        {
-            Console.WriteLine($"Parsing single file: {inputFile}");
+            Console.WriteLine($"File Mode Processing");
+            Console.WriteLine($"Input: {inputPath}");
+            Console.WriteLine($"Output: {outputPath}");
+            Console.WriteLine($"Format: {format}");
+            Console.WriteLine();
 
             try
             {
-                // Use the safe parser with debug mode for problematic files
-                bool debugMode = inputFile.Contains("z1e8") || inputFile.Contains("problematic");
-                var parser = new SafeLgbParser(debugMode);
-                var lgbData = parser.ParseFile(inputFile);
-
-                IExporter fileExporter = format.ToLower() switch
+                if (File.Exists(inputPath))
                 {
-                    "json" => new JsonExporter(),
-                    _ => new TextExporter()
-                };
-
-                fileExporter.Export(lgbData, outputFile);
-                Console.WriteLine($"Successfully exported to {outputFile}");
+                    // Single file processing
+                    HandleSingleFile(inputPath, outputPath, format);
+                }
+                else if (Directory.Exists(inputPath))
+                {
+                    // Folder processing
+                    HandleFolderProcessing(inputPath, outputPath, format);
+                }
+                else
+                {
+                    Console.WriteLine($"Error: Input path does not exist: {inputPath}");
+                    Environment.Exit(1);
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to parse {inputFile}: {ex.Message}");
-
-                // Try to create a minimal error report
-                try
-                {
-                    var errorReport = $"Error parsing file: {inputFile}\n";
-                    errorReport += $"Error: {ex.Message}\n";
-                    errorReport += $"Time: {DateTime.Now}\n";
-
-                    var errorFile = outputFile.Replace(Path.GetExtension(outputFile), "_ERROR.txt");
-                    File.WriteAllText(errorFile, errorReport);
-                    Console.WriteLine($"Error report saved to: {errorFile}");
-                }
-                catch
-                {
-                    // If we can't even write an error report, just continue
-                }
+                Console.WriteLine($"Processing failed: {ex.Message}");
+                Environment.Exit(1);
             }
         }
 
-        static void ParseFolderRecursive(string inputFolder, string outputFolder, string format)
+        static void HandleSingleFile(string inputPath, string outputPath, string format)
         {
-            Console.WriteLine($"Parsing folder: {inputFolder}");
+            Console.WriteLine($"Processing single file...");
 
-            Directory.CreateDirectory(outputFolder);
+            try
+            {
+                // Use the SafeLgbParser for file mode
+                var parser = new SafeLgbParser(debugMode: true);
+                var data = parser.ParseFile(inputPath);
+
+                if (format.ToLower() == "json")
+                {
+                    var exporter = new JsonExporter();
+                    exporter.Export(data, outputPath);
+                }
+                else
+                {
+                    var exporter = new TextExporter();
+                    exporter.Export(data, outputPath);
+                }
+
+                Console.WriteLine($"✅ Successfully processed: {outputPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Failed to process file: {ex.Message}");
+                Environment.Exit(1);
+            }
+        }
+
+        static void HandleFolderProcessing(string inputFolder, string outputFolder, string format)
+        {
+            Console.WriteLine($"Processing folder...");
 
             var lgbFiles = Directory.GetFiles(inputFolder, "*.lgb", SearchOption.AllDirectories);
 
             if (lgbFiles.Length == 0)
             {
-                Console.WriteLine($"No LGB files found in '{inputFolder}'");
+                Console.WriteLine("No LGB files found in the input folder.");
                 return;
             }
 
-            Console.WriteLine($"Found {lgbFiles.Length} LGB files to process...");
+            Console.WriteLine($"Found {lgbFiles.Length} LGB files");
+            Directory.CreateDirectory(outputFolder);
 
-            IExporter folderExporter = format.ToLower() switch
-            {
-                "json" => new JsonExporter(),
-                _ => new TextExporter()
-            };
-
+            var parser = new SafeLgbParser(debugMode: false);
             int processed = 0;
             int failed = 0;
 
-            foreach (string lgbFile in lgbFiles)
+            foreach (var lgbFile in lgbFiles)
             {
                 try
                 {
-                    string relativePath = Path.GetRelativePath(inputFolder, lgbFile);
-                    string folderOutputDir = Path.Combine(outputFolder, Path.GetDirectoryName(relativePath) ?? "");
-                    Directory.CreateDirectory(folderOutputDir);
+                    var relativePath = Path.GetRelativePath(inputFolder, lgbFile);
+                    var outputExtension = format.ToLower() == "json" ? ".json" : ".txt";
+                    var outputPath = Path.Combine(outputFolder, Path.ChangeExtension(relativePath, outputExtension));
 
-                    string fileName = Path.GetFileNameWithoutExtension(lgbFile);
-                    string extension = format.ToLower() == "json" ? ".json" : ".txt";
-                    string folderOutputFile = Path.Combine(folderOutputDir, fileName + extension);
+                    Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
 
-                    Console.WriteLine($"Processing: {relativePath}");
+                    var data = parser.ParseFile(lgbFile);
 
-                    // Use the safe parser
-                    bool debugMode = lgbFile.Contains("z1e8");
-                    var parser = new SafeLgbParser(debugMode);
-                    var lgbData = parser.ParseFile(lgbFile);
-                    folderExporter.Export(lgbData, folderOutputFile);
+                    if (format.ToLower() == "json")
+                    {
+                        var exporter = new JsonExporter();
+                        exporter.Export(data, outputPath);
+                    }
+                    else
+                    {
+                        var exporter = new TextExporter();
+                        exporter.Export(data, outputPath);
+                    }
 
                     processed++;
-                    Console.WriteLine($"✓ Processed: {relativePath}");
+                    Console.WriteLine($"✅ Processed: {relativePath}");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"✗ Failed to process '{lgbFile}': {ex.Message}");
                     failed++;
+                    Console.WriteLine($"❌ Failed: {lgbFile} - {ex.Message}");
                 }
             }
 
-            Console.WriteLine();
-            Console.WriteLine($"Processing complete:");
-            Console.WriteLine($"  Successfully processed: {processed}");
-            Console.WriteLine($"  Failed: {failed}");
-            Console.WriteLine($"  Output folder: {outputFolder}");
+            Console.WriteLine($"\nFolder processing complete!");
+            Console.WriteLine($"Processed: {processed} files");
+            Console.WriteLine($"Failed: {failed} files");
+            Console.WriteLine($"Output folder: {outputFolder}");
         }
     }
 }
