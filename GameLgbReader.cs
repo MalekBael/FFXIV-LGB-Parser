@@ -1,10 +1,15 @@
-﻿using System;
+﻿using Lumina;
+using Lumina.Data;
+using Lumina.Data.Files;
+using Lumina.Data.Parsing.Layer;
+using System;
+using Lumina.Data.Structs;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Lumina;
-using Lumina.Data.Files;
-using Lumina.Data;
+using System.Threading;
+using System.Runtime;
+using System.Reflection;
 
 namespace LgbParser
 {
@@ -14,25 +19,27 @@ namespace LgbParser
         private bool _disposed = false;
         private List<string> _discoveredLgbPaths = null;
 
-        // Zone directories extracted from your lgb_file_paths.txt
-        private static readonly string[] KnownZones = {
-            "air_a1", "fst_f1", "lak_l1", "ocn_o1", "roc_r1", "sea_s1", "wil_w1", "zon_z1"
+        private static readonly string[] BaseZonePrefixes = {
+            "air", "fst", "lak", "ocn", "roc", "sea", "wil", "zon",
         };
 
-        // Common area types found in the file
+        private static readonly string[] BaseZoneSuffixes = {
+            "a1", "f1", "l1", "o1", "r1", "s1", "w1", "z1", "e1", "m1", "g1", "c1"
+        };
+
         private static readonly string[] AreaTypes = {
-            "bah", "cnt", "dun", "evt", "fld", "hou", "ind", "pvp", "rad", "twn", "chr", "jai"
+            "bah", "cnt", "dun", "evt", "fld", "hou", "ind", "pvp", "rad", "twn",
+            "chr", "jai", "cut", "inn", "out", "tmp", "pub", "prv", "spc", "ext"
         };
 
-        // File types found in the structure
         private static readonly string[] FileTypes = {
-            "bg", "planevent", "planlive", "planmap", "planner", "sound", "vfx"
+            "bg", "planevent", "planlive", "planmap", "planner", "sound", "vfx",
+            "collision", "light", "timeline", "camera", "effect"
         };
 
-        // Instead of skipping, let's mark these as needing special handling
-        private static readonly string[] SpecialHandlingFileTypes = {
-            "planner" // These files need custom parsing
-        };
+        public Dictionary<LayerEntryType, int> EntryTypeStats { get; private set; } = new();
+        public Dictionary<string, int> FileTypeStats { get; private set; } = new();
+        public Dictionary<string, int> ZoneStats { get; private set; } = new();
 
         public GameLgbReader(string gameInstallPath)
         {
@@ -42,416 +49,802 @@ namespace LgbParser
                 throw new DirectoryNotFoundException($"FFXIV sqpack directory not found at: {sqpackPath}");
             }
 
-            _gameData = new GameData(sqpackPath);
+            var luminaOptions = new LuminaOptions
+            {
+                CacheFileResources = false,
+                LoadMultithreaded = false,
+                DefaultExcelLanguage = Language.English,
+                PanicOnSheetChecksumMismatch = false,
+                CurrentPlatform = PlatformId.Win32
+            };
+
+            _gameData = new GameData(sqpackPath, luminaOptions);
+        }
+
+        public Dictionary<string, LgbData> ParseAllLgbFilesWithCancellation(CancellationToken cancellationToken = default)
+        {
+            var results = new Dictionary<string, LgbData>();
+            var allFiles = GetAvailableLgbFiles();
+
+            Console.WriteLine($"🚀 UNRESTRICTED MODE: Processing {allFiles.Count} LGB files...");
+
+            int processed = 0;
+            int failed = 0;
+
+            try
+            {
+                foreach (var path in allFiles)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        var data = ParseLgbFileUnrestricted(path);
+                        if (data != null)
+                        {
+                            results[path] = data;
+                            processed++;
+
+                            if (processed % 50 == 0)
+                            {
+                                Console.WriteLine($"📝 Processed {processed}/{allFiles.Count} files...");
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                // Minimal cleanup
+                GC.Collect();
+            }
+
+            Console.WriteLine($"\n=== UNRESTRICTED PARSING FINISHED ===");
+            Console.WriteLine($"Successfully processed: {processed}");
+            Console.WriteLine($"Failed: {failed}");
+            Console.WriteLine($"Total files: {allFiles.Count}");
+
+            DisplayFinalStatistics();
+            return results;
         }
 
         /// <summary>
-        /// Safely parse an LGB file with comprehensive error handling and fallback methods
+        /// Unrestricted single file parsing - no memory limits
         /// </summary>
-        public LgbData ParseLgbFile(string gamePath)
+        private LgbData ParseLgbFileUnrestricted(string gamePath)
         {
             try
             {
-                // First, check if the file exists
                 if (!_gameData.FileExists(gamePath))
                 {
                     throw new FileNotFoundException($"LGB file not found: {gamePath}");
                 }
 
-                Console.WriteLine($"  Parsing {gamePath}");
-
-                // Check if this is a special handling file type
-                var fileName = Path.GetFileNameWithoutExtension(gamePath);
-                if (SpecialHandlingFileTypes.Contains(fileName, StringComparer.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine($"    Using special handling for {fileName} file type");
-                    return ParseSpecialLgbFile(gamePath);
-                }
-
-                // Attempt normal loading for other file types
                 var lgbFile = SafeLoadLgbFile(gamePath);
                 if (lgbFile == null)
                 {
                     throw new InvalidDataException($"Lumina failed to load LGB file: {gamePath}");
                 }
 
-                // Convert to our format
-                return ParseLgbFromLuminaFile(lgbFile);
+                var result = ParseLgbFromLuminaFileUnrestricted(lgbFile);
+                return result;
             }
             catch (Exception ex)
             {
-                // Wrap in a more descriptive exception
                 throw new InvalidDataException($"Failed to parse LGB file '{gamePath}': {ex.Message}", ex);
             }
         }
 
         /// <summary>
-        /// Special parsing method for problematic file types like planner.lgb
+        /// Unrestricted LGB parsing - processes ALL objects, no limits
         /// </summary>
-        private LgbData ParseSpecialLgbFile(string gamePath)
+        private LgbData ParseLgbFromLuminaFileUnrestricted(LgbFile lgbFile)
         {
-            Console.WriteLine($"    Attempting special parsing for: {gamePath}");
-
-            // Strategy 1: Try with different Lumina options or raw file access
-            try
+            var lgbData = new LgbData
             {
-                var rawFile = _gameData.GetFile(gamePath);
-                if (rawFile != null && rawFile.Data != null && rawFile.Data.Length > 0)
+                FilePath = lgbFile.FilePath?.Path ?? "Unknown",
+                Layers = lgbFile.Layers,
+                Metadata = new Dictionary<string, object>
                 {
-                    Console.WriteLine($"    Raw file loaded: {rawFile.Data.Length} bytes");
-
-                    // Try to manually parse the file header to understand the structure
-                    return ParseRawLgbFile(rawFile, gamePath);
+                    ["LayerCount"] = lgbFile.Layers.Length,
+                    ["ParsedAt"] = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC"),
+                    ["ProcessingMode"] = "Unrestricted Mode"
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"    Raw file parsing failed: {ex.Message}");
-            }
-
-            // Strategy 2: Try forcing Lumina to parse it anyway
-            try
-            {
-                Console.WriteLine($"    Attempting forced Lumina parsing...");
-                var lgbFile = _gameData.GetFile<LgbFile>(gamePath);
-                if (lgbFile != null)
-                {
-                    Console.WriteLine($"    Forced parsing succeeded!");
-                    return ParseLgbFromLuminaFile(lgbFile);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"    Forced parsing failed: {ex.Message}");
-
-                // If it's the specific array count error, let's try to work around it
-                if (ex.Message.Contains("must be a non-negative value"))
-                {
-                    return CreatePartialLgbData(gamePath, ex.Message);
-                }
-            }
-
-            // Strategy 3: Create a minimal placeholder with file info
-            return CreatePlaceholderLgbData(gamePath, "Special file type - manual parsing needed");
-        }
-
-        /// <summary>
-        /// Attempt to manually parse raw LGB file data
-        /// </summary>
-        private LgbData ParseRawLgbFile(FileResource rawFile, string gamePath)
-        {
-            Console.WriteLine($"    Analyzing raw file structure...");
-
-            var data = rawFile.Data;
-            if (data.Length < 16)
-            {
-                throw new InvalidDataException("File too small to be a valid LGB file");
-            }
-
-            // Read basic header information
-            using var reader = new LuminaBinaryReader(data);
-
-            try
-            {
-                // LGB files typically start with "LGB1" or similar
-                var magic = new string(reader.ReadChars(4));
-                var fileSize = reader.ReadInt32();
-                var chunkCount = reader.ReadInt32();
-
-                Console.WriteLine($"    File magic: {magic}");
-                Console.WriteLine($"    File size: {fileSize}");
-                Console.WriteLine($"    Chunk count: {chunkCount}");
-
-                // Create basic structure with what we can read
-                var lgbData = new LgbData
-                {
-                    FilePath = gamePath,
-                    LayerGroups = new List<LayerGroupData>(),
-                    Header = new FileHeader
-                    {
-                        FileID = magic,
-                        FileSize = fileSize,
-                        TotalChunkCount = chunkCount
-                    },
-                    ChunkHeader = new LayerChunk
-                    {
-                        ChunkId = "RAW",
-                        LayersCount = 0
-                    },
-                    Layers = new Layer[0]
-                };
-
-                // Try to read more data if the header looks valid
-                if (magic.StartsWith("LGB") && fileSize > 0 && chunkCount >= 0 && chunkCount < 1000)
-                {
-                    Console.WriteLine($"    Header looks valid, attempting deeper parsing...");
-                    // Could add more sophisticated parsing here
-
-                    // For now, add a placeholder layer with file info
-                    var layerGroup = new LayerGroupData
-                    {
-                        LayerId = 1,
-                        Name = $"Raw Data ({Path.GetFileNameWithoutExtension(gamePath)})",
-                        InstanceObjects = new List<InstanceObjectData>
-                        {
-                            new InstanceObjectData
-                            {
-                                InstanceId = 1,
-                                Name = "File Metadata",
-                                AssetType = "RawData",
-                                Transform = new TransformData
-                                {
-                                    Translation = new float[] { 0, 0, 0 },
-                                    Rotation = new float[] { 0, 0, 0, 0 },
-                                    Scale = new float[] { 1, 1, 1 }
-                                },
-                                ObjectData = new Dictionary<string, object>
-                                {
-                                    ["Magic"] = magic,
-                                    ["FileSize"] = fileSize,
-                                    ["ChunkCount"] = chunkCount,
-                                    ["DataLength"] = data.Length,
-                                    ["ParseMethod"] = "Raw file analysis",
-                                    ["Note"] = "This file required special parsing due to Lumina compatibility issues"
-                                }
-                            }
-                        }
-                    };
-
-                    lgbData.LayerGroups.Add(layerGroup);
-                }
-
-                return lgbData;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"    Raw parsing failed: {ex.Message}");
-                return CreatePlaceholderLgbData(gamePath, $"Raw parsing failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Create a partial LGB data structure when parsing partially fails
-        /// </summary>
-        private LgbData CreatePartialLgbData(string gamePath, string errorMessage)
-        {
-            return new LgbData
-            {
-                FilePath = gamePath,
-                LayerGroups = new List<LayerGroupData>
-                {
-                    new LayerGroupData
-                    {
-                        LayerId = 1,
-                        Name = "Parsing Error Info",
-                        InstanceObjects = new List<InstanceObjectData>
-                        {
-                            new InstanceObjectData
-                            {
-                                InstanceId = 1,
-                                Name = "Error Details",
-                                AssetType = "Error",
-                                Transform = new TransformData
-                                {
-                                    Translation = new float[] { 0, 0, 0 },
-                                    Rotation = new float[] { 0, 0, 0, 0 },
-                                    Scale = new float[] { 1, 1, 1 }
-                                },
-                                ObjectData = new Dictionary<string, object>
-                                {
-                                    ["ErrorMessage"] = errorMessage,
-                                    ["FileType"] = Path.GetFileNameWithoutExtension(gamePath),
-                                    ["Note"] = "This file had parsing issues but was not skipped",
-                                    ["Timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC")
-                                }
-                            }
-                        }
-                    }
-                },
-                Header = new FileHeader { FileID = "ERR", FileSize = 0, TotalChunkCount = 1 },
-                ChunkHeader = new LayerChunk { ChunkId = "ERR", LayersCount = 1 },
-                Layers = new Layer[1]
             };
-        }
 
-        /// <summary>
-        /// Create a placeholder LGB data structure for files that can't be parsed
-        /// </summary>
-        private LgbData CreatePlaceholderLgbData(string gamePath, string reason)
-        {
-            return new LgbData
+            var processedObjects = 0;
+            var enhancedObjectData = new Dictionary<uint, Dictionary<string, object>>();
+            var totalObjectsInFile = lgbFile.Layers?.Sum(l => l.InstanceObjects?.Length ?? 0) ?? 0;
+
+            Console.WriteLine($"  📋 File: {lgbData.FilePath} - {lgbFile.Layers?.Length ?? 0} layers, {totalObjectsInFile} objects");
+
+            if (lgbFile.Layers != null)
             {
-                FilePath = gamePath,
-                LayerGroups = new List<LayerGroupData>
+                foreach (var layer in lgbFile.Layers)
                 {
-                    new LayerGroupData
+                    if (layer.InstanceObjects != null)
                     {
-                        LayerId = 1,
-                        Name = "Placeholder Data",
-                        InstanceObjects = new List<InstanceObjectData>
+                        // Process ALL objects - no limits
+                        foreach (var instanceObj in layer.InstanceObjects)
                         {
-                            new InstanceObjectData
+                            try
                             {
-                                InstanceId = 1,
-                                Name = "Placeholder Object",
-                                AssetType = "Placeholder",
-                                Transform = new TransformData
-                                {
-                                    Translation = new float[] { 0, 0, 0 },
-                                    Rotation = new float[] { 0, 0, 0, 0 },
-                                    Scale = new float[] { 1, 1, 1 }
-                                },
-                                ObjectData = new Dictionary<string, object>
-                                {
-                                    ["Reason"] = reason,
-                                    ["FileType"] = Path.GetFileNameWithoutExtension(gamePath),
-                                    ["Note"] = "This file could not be fully parsed but was processed",
-                                    ["Timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC")
-                                }
+                                var enhancedData = ParseObjectDataFromLuminaComprehensive(instanceObj);
+                                enhancedObjectData[instanceObj.InstanceId] = enhancedData;
+                                processedObjects++;
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"    ⚠️  Error processing object {instanceObj.InstanceId}: {ex.Message}");
                             }
                         }
                     }
-                },
-                Header = new FileHeader { FileID = "PLCH", FileSize = 0, TotalChunkCount = 1 },
-                ChunkHeader = new LayerChunk { ChunkId = "PLCH", LayersCount = 1 },
-                Layers = new Layer[1]
-            };
+                }
+            }
+
+            if (enhancedObjectData.Count > 0)
+            {
+                lgbData.Metadata["EnhancedObjectData"] = enhancedObjectData;
+            }
+
+            lgbData.Metadata["TotalObjectsProcessed"] = processedObjects;
+
+            Console.WriteLine($"    ✅ Processed all {processedObjects} objects");
+
+            return lgbData;
         }
 
         /// <summary>
-        /// Safely load an LGB file with multiple retry strategies
+        /// Comprehensive object data parsing - handles ALL LGB entry types from LayerEntryType enum
         /// </summary>
-        private LgbFile SafeLoadLgbFile(string gamePath)
+        private Dictionary<string, object> ParseObjectDataFromLuminaComprehensive(LayerCommon.InstanceObject instanceObj)
         {
-            LgbFile lgbFile = null;
-            Exception lastException = null;
+            var data = new Dictionary<string, object>();
 
-            // Strategy 1: Normal loading
-            try
-            {
-                lgbFile = _gameData.GetFile<LgbFile>(gamePath);
-                if (lgbFile != null && lgbFile.Layers != null && lgbFile.Layers.Length >= 0)
-                {
-                    return lgbFile;
-                }
-            }
-            catch (Exception ex)
-            {
-                lastException = ex;
-                Console.WriteLine($"    Strategy 1 failed: {ex.Message}");
-            }
+            data["Type"] = instanceObj.AssetType.ToString();
 
-            // Strategy 2: Try loading as raw file resource first
-            try
-            {
-                var rawFile = _gameData.GetFile(gamePath);
-                if (rawFile != null && rawFile.Data != null && rawFile.Data.Length > 0)
-                {
-                    Console.WriteLine($"    Raw file loaded successfully ({rawFile.Data.Length} bytes), retrying as LGB...");
+            // Track entry type statistics
+            TrackEntryType(instanceObj.AssetType);
 
-                    // Try again with the raw file loaded
-                    lgbFile = _gameData.GetFile<LgbFile>(gamePath);
-                    if (lgbFile != null)
+            // Comprehensive extraction for ALL entry types using actual LayerCommon definitions
+            switch (instanceObj.AssetType)
+            {
+                case LayerEntryType.AssetNone:
+                    data["ObjectType"] = "AssetNone";
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.BG:
+                    if (instanceObj.Object is LayerCommon.BGInstanceObject bg)
                     {
-                        return lgbFile;
+                        data["AssetPath"] = bg.AssetPath ?? "Unknown";
+                        data["CollisionAssetPath"] = bg.CollisionAssetPath ?? "Unknown";
+                        data["IsVisible"] = bg.IsVisible;
+                        data["RenderShadowEnabled"] = bg.RenderShadowEnabled;
+                        data["RenderLightShadowEnabled"] = bg.RenderLightShadowEnabled;
+                        data["CollisionType"] = bg.CollisionType.ToString();
+                        data["AttributeMask"] = bg.AttributeMask;
+                        data["Attribute"] = bg.Attribute;
+                        data["RenderModelClipRange"] = bg.RenderModelClipRange;
                     }
-                }
-            }
-            catch (Exception ex)
-            {
-                lastException = ex;
-                Console.WriteLine($"    Strategy 2 failed: {ex.Message}");
+                    break;
+
+                case LayerEntryType.Attribute:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.LayLight:
+                    if (instanceObj.Object is LayerCommon.LightInstanceObject layLight)
+                    {
+                        data["LightType"] = layLight.LightType.ToString();
+                        data["Attenuation"] = layLight.Attenuation;
+                        data["RangeRate"] = layLight.RangeRate;
+                        data["TexturePath"] = layLight.TexturePath ?? "Unknown";
+                        data["SpecularEnabled"] = layLight.SpecularEnabled;
+                        data["BGShadowEnabled"] = layLight.BGShadowEnabled;
+                        data["CharacterShadowEnabled"] = layLight.CharacterShadowEnabled;
+                        data["ShadowClipRange"] = layLight.ShadowClipRange;
+                    }
+                    break;
+
+                case LayerEntryType.VFX:
+                    if (instanceObj.Object is LayerCommon.VFXInstanceObject vfx)
+                    {
+                        data["AssetPath"] = vfx.AssetPath ?? "Unknown";
+                        data["SoftParticleFadeRange"] = vfx.SoftParticleFadeRange;
+                        data["IsAutoPlay"] = vfx.IsAutoPlay;
+                        data["IsNoFarClip"] = vfx.IsNoFarClip;
+                        data["FadeNearStart"] = vfx.FadeNearStart;
+                        data["FadeNearEnd"] = vfx.FadeNearEnd;
+                        data["FadeFarStart"] = vfx.FadeFarStart;
+                        data["FadeFarEnd"] = vfx.FadeFarEnd;
+                        data["ZCorrect"] = vfx.ZCorrect;
+                    }
+                    break;
+
+                case LayerEntryType.PositionMarker:
+                    if (instanceObj.Object is LayerCommon.PositionMarkerInstanceObject positionMarker)
+                    {
+                        data["PositionMarkerType"] = positionMarker.PositionMarkerType.ToString();
+                        data["CommentJP"] = positionMarker.CommentJP;
+                        data["CommentEN"] = positionMarker.CommentEN;
+                    }
+                    break;
+
+                case LayerEntryType.SharedGroup:
+                    if (instanceObj.Object is LayerCommon.SharedGroupInstanceObject sharedGroup)
+                    {
+                        data["AssetPath"] = sharedGroup.AssetPath ?? "Unknown";
+                        data["InitialDoorState"] = sharedGroup.InitialDoorState.ToString();
+                        data["InitialRotationState"] = sharedGroup.InitialRotationState.ToString();
+                        data["RandomTimelineAutoPlay"] = sharedGroup.RandomTimelineAutoPlay;
+                        data["RandomTimelineLoopPlayback"] = sharedGroup.RandomTimelineLoopPlayback;
+                        data["BoundCLientPathInstanceId"] = sharedGroup.BoundCLientPathInstanceId;
+                        data["InitialTransformState"] = sharedGroup.InitialTransformState.ToString();
+                        data["InitialColorState"] = sharedGroup.InitialColorState.ToString();
+                    }
+                    break;
+
+                case LayerEntryType.Sound:
+                    if (instanceObj.Object is LayerCommon.SoundInstanceObject sound)
+                    {
+                        data["AssetPath"] = sound.AssetPath ?? "Unknown";
+                        data["SoundEffectParam"] = sound.SoundEffectParam;
+                    }
+                    break;
+
+                case LayerEntryType.EventNPC:
+                    if (instanceObj.Object is LayerCommon.ENPCInstanceObject enpc)
+                    {
+                        data["BaseId"] = enpc.ParentData.ParentData.BaseId;
+                        data["Behavior"] = enpc.Behavior;
+                        data["PopWeather"] = enpc.ParentData.PopWeather;
+                        data["PopTimeStart"] = enpc.ParentData.PopTimeStart;
+                        data["PopTimeEnd"] = enpc.ParentData.PopTimeEnd;
+                        data["MoveAi"] = enpc.ParentData.MoveAi;
+                        data["WanderingRange"] = enpc.ParentData.WanderingRange;
+                        data["Route"] = enpc.ParentData.Route;
+                        data["EventGroup"] = enpc.ParentData.EventGroup;
+                    }
+                    break;
+
+                case LayerEntryType.BattleNPC:
+                    // BNPCInstanceObject is internal struct, use generic extraction
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.RoutePath:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.Character:
+                    // CTCharacter is defined, use generic extraction
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.Aetheryte:
+                    if (instanceObj.Object is LayerCommon.AetheryteInstanceObject aetheryte)
+                    {
+                        data["BaseId"] = aetheryte.ParentData.BaseId;
+                        data["BoundInstanceID"] = aetheryte.BoundInstanceID;
+                    }
+                    break;
+
+                case LayerEntryType.EnvSet:
+                    if (instanceObj.Object is LayerCommon.EnvSetInstanceObject envSet)
+                    {
+                        data["AssetPath"] = envSet.AssetPath ?? "Unknown";
+                        data["SoundAssetPath"] = envSet.SoundAssetPath ?? "Unknown";
+                        data["BoundInstanceId"] = envSet.BoundInstanceId;
+                        data["Shape"] = envSet.Shape.ToString();
+                        data["IsEnvMapShootingPoint"] = envSet.IsEnvMapShootingPoint;
+                        data["Priority"] = envSet.Priority;
+                        data["EffectiveRange"] = envSet.EffectiveRange;
+                        data["InterpolationTime"] = envSet.InterpolationTime;
+                        data["Reverb"] = envSet.Reverb;
+                        data["Filter"] = envSet.Filter;
+                    }
+                    break;
+
+                case LayerEntryType.Gathering:
+                    if (instanceObj.Object is LayerCommon.GatheringInstanceObject gathering)
+                    {
+                        data["GatheringPointId"] = gathering.GatheringPointId;
+                    }
+                    break;
+
+                case LayerEntryType.HelperObject:
+                    if (instanceObj.Object is LayerCommon.HelperObjInstanceObject helperObj)
+                    {
+                        data["ObjType"] = helperObj.ObjType.ToString();
+                        data["TargetTypeBin"] = helperObj.TargetTypeBin.ToString();
+                        data["CharacterSize"] = helperObj.CharacterSize.ToString();
+                        data["UseDefaultMotion"] = helperObj.UseDefaultMotion;
+                        data["PartyMemberIndex"] = helperObj.PartyMemberIndex;
+                        data["TargetInstanceId"] = helperObj.TargetInstanceId;
+                        data["DirectId"] = helperObj.DirectId;
+                        data["UseDirectId"] = helperObj.UseDirectId;
+                        data["KeepHighTexture"] = helperObj.KeepHighTexture;
+                        data["AllianceMemberIndex"] = helperObj.AllianceMemberIndex;
+                        data["SkyVisibility"] = helperObj.SkyVisibility;
+                    }
+                    break;
+
+                case LayerEntryType.Treasure:
+                    if (instanceObj.Object is LayerCommon.TreasureInstanceObject treasure)
+                    {
+                        data["NonpopInitZone"] = treasure.NonpopInitZone;
+                    }
+                    break;
+
+                case LayerEntryType.Weapon:
+                    if (instanceObj.Object is LayerCommon.WeaponInstanceObject weapon)
+                    {
+                        data["IsVisible"] = weapon.IsVisible;
+                        data["SkeletonId"] = weapon.Model.SkeletonId;
+                        data["PatternId"] = weapon.Model.PatternId;
+                        data["ImageChangeId"] = weapon.Model.ImageChangeId;
+                        data["StainingId"] = weapon.Model.StainingId;
+                    }
+                    break;
+
+                case LayerEntryType.PopRange:
+                    if (instanceObj.Object is LayerCommon.PopRangeInstanceObject popRange)
+                    {
+                        data["PopType"] = popRange.PopType.ToString();
+                        data["InnerRadiusRatio"] = popRange.InnerRadiusRatio;
+                        data["Index"] = popRange.Index;
+                        data["RelativePositionsCount"] = popRange._RelativePositions.PosCount;
+                    }
+                    break;
+
+                case LayerEntryType.ExitRange:
+                    if (instanceObj.Object is LayerCommon.ExitRangeInstanceObject exitRange)
+                    {
+                        data["ExitType"] = exitRange.ExitType.ToString();
+                        data["ZoneId"] = exitRange.ZoneId;
+                        data["TerritoryType"] = exitRange.TerritoryType;
+                        data["Index"] = exitRange.Index;
+                        data["DestInstanceId"] = exitRange.DestInstanceId;
+                        data["ReturnInstanceId"] = exitRange.ReturnInstanceId;
+                        data["PlayerRunningDirection"] = exitRange.PlayerRunningDirection;
+                        data["TriggerBoxShape"] = exitRange.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = exitRange.ParentData.Priority;
+                        data["Enabled"] = exitRange.ParentData.Enabled;
+                    }
+                    break;
+
+                case LayerEntryType.LVB:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.MapRange:
+                    if (instanceObj.Object is LayerCommon.MapRangeInstanceObject mapRange)
+                    {
+                        data["Map"] = mapRange.Map;
+                        data["PlaceNameBlock"] = mapRange.PlaceNameBlock;
+                        data["PlaceNameSpot"] = mapRange.PlaceNameSpot;
+                        data["Weather"] = mapRange.Weather;
+                        data["BGM"] = mapRange.BGM;
+                        data["HousingBlockId"] = mapRange.HousingBlockId;
+                        data["RestBonusEffective"] = mapRange.RestBonusEffective;
+                        data["DiscoveryId"] = mapRange.DiscoveryId;
+                        data["MapEnabled"] = mapRange.MapEnabled;
+                        data["PlaceNameEnabled"] = mapRange.PlaceNameEnabled;
+                        data["DiscoveryEnabled"] = mapRange.DiscoveryEnabled;
+                        data["BGMEnabled"] = mapRange.BGMEnabled;
+                        data["WeatherEnabled"] = mapRange.WeatherEnabled;
+                        data["RestBonusEnabled"] = mapRange.RestBonusEnabled;
+                        data["TriggerBoxShape"] = mapRange.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = mapRange.ParentData.Priority;
+                        data["Enabled"] = mapRange.ParentData.Enabled;
+                    }
+                    break;
+
+                case LayerEntryType.NaviMeshRange:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.EventObject:
+                    if (instanceObj.Object is LayerCommon.EventInstanceObject eventObj)
+                    {
+                        data["BaseId"] = eventObj.ParentData.BaseId;
+                        data["BoundInstanceId"] = eventObj.BoundInstanceId;
+                    }
+                    break;
+
+                case LayerEntryType.DemiHuman:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.EnvLocation:
+                    if (instanceObj.Object is LayerCommon.EnvLocationInstanceObject envLocation)
+                    {
+                        data["SHAmbientLightAssetPath"] = envLocation.SHAmbientLightAssetPath ?? "Unknown";
+                        data["EnvMapAssetPath"] = envLocation.EnvMapAssetPath ?? "Unknown";
+                    }
+                    break;
+
+                case LayerEntryType.ControlPoint:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.EventRange:
+                    if (instanceObj.Object is LayerCommon.EventRangeInstanceObject eventRange)
+                    {
+                        data["TriggerBoxShape"] = eventRange.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = eventRange.ParentData.Priority;
+                        data["Enabled"] = eventRange.ParentData.Enabled;
+                    }
+                    break;
+
+                case LayerEntryType.RestBonusRange:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.QuestMarker:
+                    if (instanceObj.Object is LayerCommon.QuestMarkerInstanceObject questMarker)
+                    {
+                        data["RangeType"] = questMarker.RangeType.ToString();
+                    }
+                    break;
+
+                case LayerEntryType.Timeline:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.ObjectBehaviorSet:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.Movie:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.ScenarioExd:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.ScenarioText:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.CollisionBox:
+                    if (instanceObj.Object is LayerCommon.CollisionBoxInstanceObject collisionBox)
+                    {
+                        data["AttributeMask"] = collisionBox.AttributeMask;
+                        data["Attribute"] = collisionBox.Attribute;
+                        data["PushPlayerOut"] = collisionBox.PushPlayerOut;
+                        data["CollisionAssetPath"] = collisionBox.CollisionAssetPath ?? "Unknown";
+                        data["TriggerBoxShape"] = collisionBox.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = collisionBox.ParentData.Priority;
+                        data["Enabled"] = collisionBox.ParentData.Enabled;
+                    }
+                    break;
+
+                case LayerEntryType.DoorRange:
+                    // DoorRangeInstanceObject is not fully implemented
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.LineVFX:
+                    if (instanceObj.Object is LayerCommon.LineVFXInstanceObject lineVFX)
+                    {
+                        data["LineStyle"] = lineVFX.LineStyle.ToString();
+                    }
+                    break;
+
+                case LayerEntryType.SoundEnvSet:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.CutActionTimeline:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.CharaScene:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.CutAction:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.EquipPreset:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.ClientPath:
+                    if (instanceObj.Object is LayerCommon.ClientPathInstanceObject clientPath)
+                    {
+                        data["Ring"] = clientPath.Ring;
+                        data["ControlPointCount"] = clientPath.ParentData.ControlPointCount;
+                    }
+                    break;
+
+                case LayerEntryType.ServerPath:
+                    if (instanceObj.Object is LayerCommon.ServerPathInstanceObject serverPath)
+                    {
+                        data["ControlPointCount"] = serverPath.ParentData.ControlPointCount;
+                    }
+                    break;
+
+                case LayerEntryType.GimmickRange:
+                    if (instanceObj.Object is LayerCommon.GimmickRangeInstanceObject gimmickRange)
+                    {
+                        data["GimmickType"] = gimmickRange.GimmickType.ToString();
+                        data["GimmickKey"] = gimmickRange.GimmickKey;
+                        data["RoomUseAttribute"] = gimmickRange.RoomUseAttribute;
+                        data["GroupId"] = gimmickRange.GroupId;
+                        data["EnabledInDead"] = gimmickRange.EnabledInDead;
+                        data["TriggerBoxShape"] = gimmickRange.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = gimmickRange.ParentData.Priority;
+                        data["Enabled"] = gimmickRange.ParentData.Enabled;
+                    }
+                    break;
+
+                case LayerEntryType.TargetMarker:
+                    if (instanceObj.Object is LayerCommon.TargetMarkerInstanceObject targetMarker)
+                    {
+                        data["NamePlateOffsetY"] = targetMarker.NamePlateOffsetY;
+                        data["TargetMakerType"] = targetMarker.TargetMakerType.ToString();
+                    }
+                    break;
+
+                case LayerEntryType.ChairMarker:
+                    if (instanceObj.Object is LayerCommon.ChairMarkerInstanceObject chairMarker)
+                    {
+                        data["LeftEnable"] = chairMarker.LeftEnable;
+                        data["RightEnable"] = chairMarker.RightEnable;
+                        data["BackEnable"] = chairMarker.BackEnable;
+                        data["ObjectType"] = chairMarker.ObjectType.ToString();
+                    }
+                    break;
+
+                case LayerEntryType.ClickableRange:
+                    if (instanceObj.Object is LayerCommon.ClickableRangeInstanceObject clickableRange)
+                    {
+                        // This object only has padding, use generic extraction
+                        ExtractGenericObjectData(data, clickableRange);
+                    }
+                    break;
+
+                case LayerEntryType.PrefetchRange:
+                    if (instanceObj.Object is LayerCommon.PrefetchRangeInstanceObject prefetchRange)
+                    {
+                        data["BoundInstanceId"] = prefetchRange.BoundInstanceId;
+                        data["TriggerBoxShape"] = prefetchRange.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = prefetchRange.ParentData.Priority;
+                        data["Enabled"] = prefetchRange.ParentData.Enabled;
+                    }
+                    break;
+
+                case LayerEntryType.FateRange:
+                    if (instanceObj.Object is LayerCommon.FateRangeInstanceObject fateRange)
+                    {
+                        data["FateLayoutLabelId"] = fateRange.FateLayoutLabelId;
+                        data["TriggerBoxShape"] = fateRange.ParentData.TriggerBoxShape.ToString();
+                        data["Priority"] = fateRange.ParentData.Priority;
+                        data["Enabled"] = fateRange.ParentData.Enabled;
+                        Console.WriteLine($"    ★ FOUND FATERANGE! FateLayoutLabelId: {fateRange.FateLayoutLabelId}");
+                    }
+                    break;
+
+                // Handle all other entry types that aren't explicitly defined in LayerCommon
+                case LayerEntryType.Clip:
+                case LayerEntryType.ClipCtrlPoint:
+                case LayerEntryType.ClipCamera:
+                case LayerEntryType.ClipLight:
+                case LayerEntryType.ClipReserve00:
+                case LayerEntryType.ClipReserve01:
+                case LayerEntryType.ClipReserve02:
+                case LayerEntryType.ClipReserve03:
+                case LayerEntryType.ClipReserve04:
+                case LayerEntryType.ClipReserve05:
+                case LayerEntryType.ClipReserve06:
+                case LayerEntryType.ClipReserve07:
+                case LayerEntryType.ClipReserve08:
+                case LayerEntryType.ClipReserve09:
+                case LayerEntryType.ClipReserve10:
+                case LayerEntryType.ClipReserve11:
+                case LayerEntryType.ClipReserve12:
+                case LayerEntryType.ClipReserve13:
+                case LayerEntryType.ClipReserve14:
+                case LayerEntryType.CutAssetOnlySelectable:
+                case LayerEntryType.Player:
+                case LayerEntryType.Monster:
+                case LayerEntryType.PartyMember:
+                case LayerEntryType.KeepRange:
+                case LayerEntryType.SphereCastRange:
+                case LayerEntryType.IndoorObject:
+                case LayerEntryType.OutdoorObject:
+                case LayerEntryType.EditGroup:
+                case LayerEntryType.StableChocobo:
+                    data["ReserveType"] = instanceObj.AssetType.ToString();
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                case LayerEntryType.MaxAssetType:
+                    data["MaxAssetType"] = "MaxAssetType";
+                    break;
+
+                // Handle any unknown types
+                default:
+                    data["ObjectType"] = instanceObj.Object?.GetType().Name ?? "null";
+                    data["UnknownType"] = instanceObj.AssetType.ToString();
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
             }
 
-            // If all strategies failed, re-throw the last exception
-            if (lastException != null)
-            {
-                throw lastException;
-            }
-
-            return null;
+            return data;
         }
 
         /// <summary>
-        /// Parse ALL available LGB files with robust error handling - NO MORE SKIPPING!
+        /// Helper method to extract common data fields that most objects have
         /// </summary>
-        public Dictionary<string, LgbData> ParseAllLgbFiles(int maxFiles = 0)
+        private void ExtractCommonData(Dictionary<string, object> data, object obj)
         {
-            var results = new Dictionary<string, LgbData>();
-            var allFiles = GetAvailableLgbFiles();
+            if (obj == null) return;
 
-            // If maxFiles is 0, parse all files
-            var filesToProcess = maxFiles > 0 ? allFiles.Take(maxFiles).ToList() : allFiles;
+            var objType = obj.GetType();
+            var properties = objType.GetProperties();
 
-            Console.WriteLine($"Parsing {filesToProcess.Count} LGB files from game installation (including planner files)...");
-
-            int processed = 0;
-            int failed = 0;
-            int specialHandling = 0;
-
-            var problemFiles = new List<string>();
-
-            foreach (var path in filesToProcess)
+            foreach (var prop in properties)
             {
                 try
                 {
-                    var fileName = Path.GetFileNameWithoutExtension(path);
-                    if (SpecialHandlingFileTypes.Contains(fileName, StringComparer.OrdinalIgnoreCase))
+                    if (prop.CanRead && !prop.Name.Equals("GetType") && !data.ContainsKey(prop.Name))
                     {
-                        Console.WriteLine($"🔧 Special handling for: {path}");
-                        specialHandling++;
+                        var value = prop.GetValue(obj);
+                        if (value != null)
+                        {
+                            data[prop.Name] = value;
+                        }
                     }
+                }
+                catch
+                {
+                    // Skip properties that can't be read
+                }
+            }
+        }
 
-                    var data = ParseLgbFile(path);
+        /// <summary>
+        /// Helper method to extract data from unknown object types using reflection
+        /// </summary>
+        private void ExtractGenericObjectData(Dictionary<string, object> data, object obj)
+        {
+            if (obj == null)
+            {
+                data["ObjectData"] = "null";
+                return;
+            }
+
+            try
+            {
+                var objType = obj.GetType();
+                data["ObjectTypeName"] = objType.Name;
+
+                var properties = objType.GetProperties();
+                foreach (var prop in properties)
+                {
+                    try
+                    {
+                        if (prop.CanRead && !prop.Name.Equals("GetType"))
+                        {
+                            var value = prop.GetValue(obj);
+                            if (value != null)
+                            {
+                                data[prop.Name] = value;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip properties that can't be read
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                data["ExtractionError"] = ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// Zone parsing - unrestricted
+        /// </summary>
+        public Dictionary<string, LgbData> ParseLgbFilesByZoneWithCancellation(string zoneName, CancellationToken cancellationToken = default)
+        {
+            var results = new Dictionary<string, LgbData>();
+            var files = GetLgbFilesByZone(zoneName);
+
+            Console.WriteLine($"🚀 UNRESTRICTED ZONE PARSING: {files.Count} files from zone '{zoneName}'...");
+
+            int processed = 0;
+            int failed = 0;
+
+            foreach (var path in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var data = ParseLgbFileUnrestricted(path);
                     if (data != null)
                     {
                         results[path] = data;
                         processed++;
-
-                        if (processed % 10 == 0 && processed > 0)
-                        {
-                            Console.WriteLine($"Progress: {processed}/{filesToProcess.Count} files processed... (Special: {specialHandling}, Failed: {failed})");
-                        }
+                        Console.WriteLine($"✓ [{processed}/{files.Count}] {path}");
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    problemFiles.Add(path);
-
-                    // Log the error but continue processing
                     Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
                 }
             }
 
-            Console.WriteLine($"\nCompleted LGB file processing:");
-            Console.WriteLine($"  Successfully processed: {processed}");
-            Console.WriteLine($"  Special handling used: {specialHandling}");
-            Console.WriteLine($"  Failed: {failed}");
-            Console.WriteLine($"  Total files processed: {filesToProcess.Count}");
-
-            if (problemFiles.Count > 0)
-            {
-                Console.WriteLine($"\nFiles that completely failed:");
-                foreach (var file in problemFiles.Take(10)) // Show first 10
-                {
-                    Console.WriteLine($"  - {file}");
-                }
-                if (problemFiles.Count > 10)
-                {
-                    Console.WriteLine($"  ... and {problemFiles.Count - 10} more");
-                }
-            }
-
+            Console.WriteLine($"Completed zone '{zoneName}': {processed} successful, {failed} failed");
             return results;
         }
 
-        // ... (keep all the existing discovery methods and other methods unchanged)
-        // I'll keep the rest of the methods the same as the previous version
-
         /// <summary>
-        /// Dynamically discover all LGB files based on known zone patterns
+        /// Type parsing - unrestricted
         /// </summary>
+        public Dictionary<string, LgbData> ParseLgbFilesByTypeWithCancellation(string fileType, CancellationToken cancellationToken = default)
+        {
+            var results = new Dictionary<string, LgbData>();
+            var files = GetLgbFilesByType(fileType);
+
+            Console.WriteLine($"🚀 UNRESTRICTED TYPE PARSING: {files.Count} {fileType} files...");
+
+            int processed = 0;
+            int failed = 0;
+
+            foreach (var path in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var data = ParseLgbFileUnrestricted(path);
+                    if (data != null)
+                    {
+                        results[path] = data;
+                        processed++;
+                        Console.WriteLine($"✓ [{processed}/{files.Count}] {path}");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
+                }
+            }
+
+            Console.WriteLine($"Completed {fileType} files: {processed} successful, {failed} failed");
+            return results;
+        }
+
+        // File discovery - no limits
         public List<string> DiscoverAllLgbFiles()
         {
             if (_discoveredLgbPaths != null)
@@ -460,101 +853,253 @@ namespace LgbParser
                 return _discoveredLgbPaths;
             }
 
-            Console.WriteLine("Discovering LGB files using zone-based pattern testing...");
-            var lgbFiles = new List<string>();
+            Console.WriteLine("🚀 Starting comprehensive LGB file discovery...");
+            var lgbFiles = new HashSet<string>();
 
             try
             {
-                lgbFiles = DiscoverLgbFilesByZonePatterns();
+                Console.WriteLine("Phase 1: Known patterns discovery...");
+                lgbFiles.UnionWith(DiscoverByKnownPatterns());
 
-                // Cache the result
-                _discoveredLgbPaths = lgbFiles.Distinct().ToList();
-                Console.WriteLine($"Discovered {_discoveredLgbPaths.Count} LGB files total");
+                Console.WriteLine("Phase 2: Systematic discovery...");
+                lgbFiles.UnionWith(DiscoverBySystematicTestingLimited());
 
+                // No file limits - take all discovered files
+                _discoveredLgbPaths = lgbFiles.ToList();
+                Console.WriteLine($"Total discovered: {_discoveredLgbPaths.Count} files (no limits applied)");
+
+                GenerateDiscoveryStatistics();
                 return _discoveredLgbPaths;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error during LGB file discovery: {ex.Message}");
+                Console.WriteLine($"Error during discovery: {ex.Message}");
                 _discoveredLgbPaths = new List<string>();
                 return _discoveredLgbPaths;
             }
         }
 
-        /// <summary>
-        /// Discover LGB files using the zone patterns extracted from your file list
-        /// </summary>
-        private List<string> DiscoverLgbFilesByZonePatterns()
+        private List<string> DiscoverByKnownPatterns()
         {
             var discoveredFiles = new List<string>();
+            Console.WriteLine("Strategy 1: Comprehensive known pattern discovery...");
 
-            Console.WriteLine("Testing zone-based LGB file patterns...");
+            var knownZones = new[] { "air_a1", "fst_f1", "lak_l1", "ocn_o1", "roc_r1", "sea_s1", "wil_w1", "zon_z1" };
 
-            int totalChecked = 0;
-            int foundFiles = 0;
-
-            foreach (var zone in KnownZones)
+            foreach (var zone in knownZones)
             {
-                Console.WriteLine($"  Checking zone: {zone}");
-
-                foreach (var areaType in AreaTypes)
+                foreach (var areaType in AreaTypes) // No limits
                 {
-                    // Generate area IDs based on the patterns seen in your file
                     var areaIds = GenerateAreaIdsForZone(zone, areaType);
-
-                    foreach (var areaId in areaIds)
+                    foreach (var areaId in areaIds) // No limits
                     {
-                        foreach (var fileType in FileTypes)
+                        foreach (var fileType in FileTypes) // No limits
                         {
                             var testPath = $"bg/ffxiv/{zone}/{areaType}/{areaId}/level/{fileType}.lgb";
-                            totalChecked++;
-
-                            if (totalChecked % 100 == 0)
+                            if (TestAndAddFile(testPath, discoveredFiles))
                             {
-                                Console.WriteLine($"    Checked {totalChecked} paths, found {foundFiles} files...");
-                            }
-
-                            try
-                            {
-                                if (LgbFileExists(testPath))
-                                {
-                                    discoveredFiles.Add(testPath);
-                                    foundFiles++;
-                                    Console.WriteLine($"    ✓ Found: {testPath}");
-                                }
-                            }
-                            catch
-                            {
-                                // Ignore errors and continue
+                                Console.WriteLine($"    ✓ Found: {testPath}");
                             }
                         }
                     }
                 }
             }
 
-            Console.WriteLine($"Zone-based discovery complete: checked {totalChecked} paths, found {foundFiles} files");
+            Console.WriteLine($"Strategy 1 found: {discoveredFiles.Count} files");
             return discoveredFiles;
         }
 
-        /// <summary>
-        /// Generate area IDs for a specific zone and area type based on observed patterns
-        /// </summary>
-        private List<string> GenerateAreaIdsForZone(string zone, string areaType)
+        private List<string> DiscoverBySystematicTestingLimited()
+        {
+            var discoveredFiles = new List<string>();
+            Console.WriteLine("Comprehensive systematic testing...");
+
+            int testCount = 0;
+            const int MAX_TESTS = 10000; // Increased limit
+
+            foreach (var prefix in BaseZonePrefixes) // No limits
+            {
+                foreach (var suffix in BaseZoneSuffixes) // No limits
+                {
+                    var zone = $"{prefix}_{suffix}";
+
+                    foreach (var areaType in AreaTypes.Take(15)) // Increased limit
+                    {
+                        var areaIds = GenerateSystematicAreaIds(zone, areaType).Take(15); // Increased limit
+
+                        foreach (var areaId in areaIds)
+                        {
+                            foreach (var fileType in FileTypes) // No limits
+                            {
+                                var testPath = $"bg/ffxiv/{zone}/{areaType}/{areaId}/level/{fileType}.lgb";
+                                testCount++;
+
+                                if (TestAndAddFile(testPath, discoveredFiles))
+                                {
+                                    Console.WriteLine($"    ✓ Found: {testPath}");
+                                }
+
+                                if (testCount >= MAX_TESTS)
+                                {
+                                    Console.WriteLine($"    Reached test limit ({MAX_TESTS})");
+                                    goto EndSystematicSearch;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        EndSystematicSearch:
+            Console.WriteLine($"Comprehensive search found: {discoveredFiles.Count} files ({testCount} tests)");
+            return discoveredFiles;
+        }
+
+        public LgbData ParseLgbFile(string gamePath)
+        {
+            return ParseLgbFileUnrestricted(gamePath);
+        }
+
+        private List<string> GenerateSystematicAreaIds(string zone, string areaType)
         {
             var areaIds = new List<string>();
-
-            // Extract zone prefix and number (e.g., "sea" and "1" from "sea_s1")
             var parts = zone.Split('_');
             if (parts.Length < 2) return areaIds;
 
-            var zonePrefix = parts[0]; // e.g., "sea"
-            var zoneCode = parts[1]; // e.g., "s1"
-            var zoneNumber = zoneCode.Length > 1 ? zoneCode.Substring(1) : "1"; // e.g., "1"
-            var zoneLetter = zoneCode.Length > 0 ? zoneCode.Substring(0, 1) : "z"; // e.g., "s"
+            var zoneLetter = parts[1].Substring(0, 1);
+            var zoneNumber = parts[1].Substring(1);
+            var areaLetter = areaType.Substring(0, 1);
 
-            var areaPrefix = areaType.Substring(0, 1); // e.g., "f" from "fld"
+            // Increased ID generation
+            for (int i = 1; i <= 10; i++) // Increased from 5
+            {
+                areaIds.Add($"{zoneLetter}{zoneNumber}{areaLetter}{i}");
+            }
 
-            // Based on your file patterns, generate common area ID patterns
+            for (char c = 'a'; c <= 'j'; c++) // Increased from 'e'
+            {
+                areaIds.Add($"{zoneLetter}{zoneNumber}{areaLetter}{c}");
+            }
+
+            return areaIds;
+        }
+
+        private bool TestAndAddFile(string testPath, List<string> fileList)
+        {
+            try
+            {
+                if (_gameData.FileExists(testPath))
+                {
+                    fileList.Add(testPath);
+                    TrackFileDiscovery(testPath);
+                    return true;
+                }
+            }
+            catch
+            {
+                // Ignore errors and continue
+            }
+            return false;
+        }
+
+        private void TrackFileDiscovery(string filePath)
+        {
+            var fileName = Path.GetFileNameWithoutExtension(filePath);
+            FileTypeStats[fileName] = FileTypeStats.GetValueOrDefault(fileName, 0) + 1;
+
+            var pathParts = filePath.Split('/');
+            if (pathParts.Length > 2)
+            {
+                var zone = pathParts[2];
+                ZoneStats[zone] = ZoneStats.GetValueOrDefault(zone, 0) + 1;
+            }
+        }
+
+        private void GenerateDiscoveryStatistics()
+        {
+            Console.WriteLine("\n=== Discovery Statistics ===");
+
+            Console.WriteLine($"\nFile Types Found:");
+            foreach (var kvp in FileTypeStats.OrderByDescending(x => x.Value))
+            {
+                Console.WriteLine($"  {kvp.Key}: {kvp.Value} files");
+            }
+
+            Console.WriteLine($"\nZones Found:");
+            foreach (var kvp in ZoneStats.OrderByDescending(x => x.Value))
+            {
+                Console.WriteLine($"  {kvp.Key}: {kvp.Value} files");
+            }
+        }
+
+        private void TrackEntryType(LayerEntryType entryType)
+        {
+            EntryTypeStats[entryType] = EntryTypeStats.GetValueOrDefault(entryType, 0) + 1;
+        }
+
+        private void DisplayFinalStatistics()
+        {
+            Console.WriteLine($"\n=== FINAL STATISTICS (Unrestricted Mode) ===");
+            foreach (var kvp in EntryTypeStats.OrderByDescending(x => x.Value))
+            {
+                Console.WriteLine($"{kvp.Key}: {kvp.Value} instances");
+            }
+
+            if (EntryTypeStats.ContainsKey(LayerEntryType.FateRange))
+            {
+                Console.WriteLine($"\n🎉 SUCCESS: Found {EntryTypeStats[LayerEntryType.FateRange]} FateRange instances!");
+            }
+            else
+            {
+                Console.WriteLine($"\n⚠️  No FateRange instances found in current file set.");
+            }
+
+            Console.WriteLine($"\nTotal Entry Types Discovered: {EntryTypeStats.Count}");
+            Console.WriteLine($"Total Object Instances: {EntryTypeStats.Values.Sum()}");
+        }
+
+        public List<string> GetLgbFilesByZone(string zonePattern)
+        {
+            var allFiles = GetAvailableLgbFiles();
+            return allFiles.Where(path => path.Contains(zonePattern, StringComparison.OrdinalIgnoreCase))
+                          .ToList();
+        }
+
+        public List<string> GetLgbFilesByType(string fileType)
+        {
+            var allFiles = GetAvailableLgbFiles();
+            return allFiles.Where(path => path.EndsWith($"/{fileType}.lgb", StringComparison.OrdinalIgnoreCase))
+                          .ToList();
+        }
+
+        public List<string> GetAvailableLgbFiles() => DiscoverAllLgbFiles();
+
+        public bool LgbFileExists(string gamePath) => _gameData.FileExists(gamePath);
+
+        private LgbFile SafeLoadLgbFile(string gamePath)
+        {
+            try
+            {
+                var lgbFile = _gameData.GetFile<LgbFile>(gamePath);
+                if (lgbFile != null && lgbFile.Layers != null && lgbFile.Layers.Length >= 0)
+                {
+                    return lgbFile;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"    Loading failed: {ex.Message}");
+                throw;
+            }
+            return null;
+        }
+
+        private List<string> GenerateAreaIdsForZone(string zone, string areaType)
+        {
+            var areaIds = new List<string>();
+            var parts = zone.Split('_');
+            if (parts.Length < 2) return areaIds;
+
             switch (zone)
             {
                 case "air_a1":
@@ -564,393 +1109,34 @@ namespace LgbParser
                 case "fst_f1":
                     switch (areaType)
                     {
-                        case "bah": areaIds.AddRange(new[] { "f1b1", "f1b2", "f1b3", "f1b4", "f1b5" }); break;
-                        case "cnt": areaIds.AddRange(new[] { "f1c1", "f1c2", "f1c3", "f1c4" }); break;
-                        case "dun": areaIds.AddRange(new[] { "f1d1", "f1d2", "f1d3", "f1d4", "f1d5", "f1d6", "f1d7", "f1d8" }); break;
-                        case "evt": areaIds.AddRange(new[] { "f1e4", "f1e5", "f1e6", "f1e7" }); break;
-                        case "fld": areaIds.AddRange(new[] { "f1f1", "f1f2", "f1f3", "f1f4", "f1fa", "f1fb", "f1fc" }); break;
-                        case "hou": areaIds.AddRange(new[] { "f1h1" }); break;
-                        case "ind": areaIds.AddRange(new[] { "f1i1", "f1i2", "f1i3", "f1i4", "f1i5" }); break;
-                        case "rad": areaIds.AddRange(new[] { "f1r1" }); break;
-                        case "twn": areaIds.AddRange(new[] { "f1t1", "f1t2", "f1ti" }); break;
-                    }
-                    break;
-
-                case "lak_l1":
-                    switch (areaType)
-                    {
-                        case "dun": areaIds.AddRange(new[] { "l1d1" }); break;
-                        case "evt": areaIds.AddRange(new[] { "l1e1", "l1e2" }); break;
-                        case "fld": areaIds.AddRange(new[] { "l1f1" }); break;
-                        case "pvp": areaIds.AddRange(new[] { "l1p1" }); break;
-                        case "rad": areaIds.AddRange(new[] { "l1r1", "l1r2", "l1r3" }); break;
-                    }
-                    break;
-
-                case "ocn_o1":
-                    switch (areaType)
-                    {
-                        case "evt": areaIds.AddRange(new[] { "o1e1", "o1e2" }); break;
-                        case "fld": areaIds.AddRange(new[] { "o1fa" }); break;
-                    }
-                    break;
-
-                case "roc_r1":
-                    switch (areaType)
-                    {
-                        case "dun": areaIds.AddRange(new[] { "r1d1", "r1d2", "r1d3" }); break;
-                        case "evt": areaIds.AddRange(new[] { "r1e1", "r1e2", "r1e3" }); break;
-                        case "fld": areaIds.AddRange(new[] { "r1f1", "r1fa", "r1fb", "r1fc", "r1fd", "r1fe" }); break;
-                        case "rad": areaIds.AddRange(new[] { "r1r1", "r1r2" }); break;
+                        case "bah": areaIds.AddRange(new[] { "f1b1", "f1b2", "f1b3", "f1b4", "f1b5" }); break; // Increased
+                        case "cnt": areaIds.AddRange(new[] { "f1c1", "f1c2", "f1c3" }); break;
+                        case "dun": areaIds.AddRange(new[] { "f1d1", "f1d2", "f1d3", "f1d4", "f1d5" }); break;
+                        case "evt": areaIds.AddRange(new[] { "f1e4", "f1e5", "f1e1", "f1e2", "f1e3" }); break;
+                        case "fld": areaIds.AddRange(new[] { "f1f1", "f1f2", "f1f3", "f1f4" }); break;
+                        case "hou": areaIds.AddRange(new[] { "f1h1", "f1h2" }); break;
+                        case "ind": areaIds.AddRange(new[] { "f1i1", "f1i2", "f1i3" }); break;
+                        case "rad": areaIds.AddRange(new[] { "f1r1", "f1r2" }); break;
+                        case "twn": areaIds.AddRange(new[] { "f1t1", "f1t2", "f1t3" }); break;
                     }
                     break;
 
                 case "sea_s1":
                     switch (areaType)
                     {
-                        case "bah": areaIds.AddRange(new[] { "s1b1", "s1b2", "s1b3", "s1b4", "s1b5", "s1b7" }); break;
-                        case "dun": areaIds.AddRange(new[] { "s1d1", "s1d2", "s1d3", "s1d4", "s1d5", "s1d6", "s1d7", "s1d8", "s1d9", "s1da" }); break;
-                        case "evt": areaIds.AddRange(new[] { "s1e4", "s1e5", "s1e6", "s1e7" }); break;
-                        case "fld": areaIds.AddRange(new[] { "s1f1", "s1f2", "s1f3", "s1f4", "s1f5", "s1f6", "s1fa", "s1fb" }); break;
-                        case "hou": areaIds.AddRange(new[] { "s1h1" }); break;
-                        case "ind": areaIds.AddRange(new[] { "s1i1", "s1i2", "s1i3", "s1i4", "s1i5" }); break;
-                        case "pvp": areaIds.AddRange(new[] { "s1p1", "s1p2", "s1p3", "s1p4", "s1p5" }); break;
-                        case "twn": areaIds.AddRange(new[] { "s1t1", "s1t2", "s1ti" }); break;
-                    }
-                    break;
-
-                case "wil_w1":
-                    switch (areaType)
-                    {
-                        case "bah": areaIds.AddRange(new[] { "w1b1", "w1b2", "w1b3", "w1b4", "w1b5" }); break;
-                        case "cnt": areaIds.AddRange(new[] { "w1c1" }); break;
-                        case "dun": areaIds.AddRange(new[] { "w1d1", "w1d2", "w1d3", "w1d4", "w1d5", "w1d6", "w1d7", "w1d8" }); break;
-                        case "evt": areaIds.AddRange(new[] { "w1e4", "w1e5", "w1e6", "w1e8", "w1e9", "w1ea", "w1eb", "w1ec", "w1ed" }); break;
-                        case "fld": areaIds.AddRange(new[] { "w1f1", "w1f2", "w1f3", "w1f4", "w1f5", "w1fa", "w1fb", "w1fc" }); break;
-                        case "hou": areaIds.AddRange(new[] { "w1h1" }); break;
-                        case "ind": areaIds.AddRange(new[] { "w1i1", "w1i2", "w1i3", "w1i4", "w1i5" }); break;
-                        case "rad": areaIds.AddRange(new[] { "w1r1" }); break;
-                        case "twn": areaIds.AddRange(new[] { "w1t1", "w1t2", "w1ti" }); break;
-                    }
-                    break;
-
-                case "zon_z1":
-                    switch (areaType)
-                    {
-                        case "chr": areaIds.AddRange(new[] { "z1c1", "z1c2", "z1c3", "z1c4", "z1c5" }); break;
-                        case "evt": areaIds.AddRange(new[] { "z1e1", "z1e2", "z1e3", "z1e4", "z1e5", "z1e6", "z1e7", "z1e8", "z1e9" }); break;
-                        case "jai": areaIds.AddRange(new[] { "z1j1" }); break;
-                    }
-                    break;
-            }
-
-            return areaIds;
-        }
-
-        /// <summary>
-        /// Get all available LGB files
-        /// </summary>
-        public List<string> GetAvailableLgbFiles()
-        {
-            return DiscoverAllLgbFiles();
-        }
-
-        /// <summary>
-        /// Get LGB files filtered by zone/area
-        /// </summary>
-        public List<string> GetLgbFilesByZone(string zonePattern)
-        {
-            var allFiles = GetAvailableLgbFiles();
-            return allFiles.Where(path => path.Contains(zonePattern, StringComparison.OrdinalIgnoreCase))
-                          .ToList();
-        }
-
-        /// <summary>
-        /// Get LGB files filtered by type (bg, planevent, planmap, etc.)
-        /// </summary>
-        public List<string> GetLgbFilesByType(string fileType)
-        {
-            var allFiles = GetAvailableLgbFiles();
-            return allFiles.Where(path => path.EndsWith($"/{fileType}.lgb", StringComparison.OrdinalIgnoreCase))
-                          .ToList();
-        }
-
-        /// <summary>
-        /// Get LGB files by area type (fld, twn, dun, etc.)
-        /// </summary>
-        public List<string> GetLgbFilesByAreaType(string areaType)
-        {
-            var allFiles = GetAvailableLgbFiles();
-            return allFiles.Where(path => path.Contains($"/{areaType}/", StringComparison.OrdinalIgnoreCase))
-                          .ToList();
-        }
-
-        /// <summary>
-        /// Check if an LGB file exists in the game installation
-        /// </summary>
-        public bool LgbFileExists(string gamePath)
-        {
-            return _gameData.FileExists(gamePath);
-        }
-
-        /// <summary>
-        /// Parse all LGB files of a specific type with error handling
-        /// </summary>
-        public Dictionary<string, LgbData> ParseLgbFilesByType(string fileType, int maxFiles = 100)
-        {
-            var results = new Dictionary<string, LgbData>();
-            var files = GetLgbFilesByType(fileType).Take(maxFiles);
-
-            Console.WriteLine($"Parsing up to {maxFiles} {fileType} LGB files...");
-
-            int processed = 0;
-            int failed = 0;
-            int specialHandling = 0;
-
-            foreach (var path in files)
-            {
-                try
-                {
-                    var fileName = Path.GetFileNameWithoutExtension(path);
-                    if (SpecialHandlingFileTypes.Contains(fileName, StringComparer.OrdinalIgnoreCase))
-                    {
-                        specialHandling++;
-                    }
-
-                    var data = ParseLgbFile(path);
-                    if (data != null)
-                    {
-                        results[path] = data;
-                        processed++;
-                        Console.WriteLine($"✓ Successfully parsed: {path}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    failed++;
-                    Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
-                }
-            }
-
-            Console.WriteLine($"Completed {fileType} files: {processed} successful, {specialHandling} special handling, {failed} failed");
-            return results;
-        }
-
-        /// <summary>
-        /// Parse all LGB files from a specific zone with error handling
-        /// </summary>
-        public Dictionary<string, LgbData> ParseLgbFilesByZone(string zoneName, int maxFiles = 50)
-        {
-            var results = new Dictionary<string, LgbData>();
-            var files = GetLgbFilesByZone(zoneName).Take(maxFiles);
-
-            Console.WriteLine($"Parsing up to {maxFiles} LGB files from zone '{zoneName}'...");
-
-            int processed = 0;
-            int failed = 0;
-            int specialHandling = 0;
-
-            foreach (var path in files)
-            {
-                try
-                {
-                    var fileName = Path.GetFileNameWithoutExtension(path);
-                    if (SpecialHandlingFileTypes.Contains(fileName, StringComparer.OrdinalIgnoreCase))
-                    {
-                        specialHandling++;
-                    }
-
-                    var data = ParseLgbFile(path);
-                    if (data != null)
-                    {
-                        results[path] = data;
-                        processed++;
-                        Console.WriteLine($"✓ Successfully parsed: {path}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    failed++;
-                    Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
-                }
-            }
-
-            Console.WriteLine($"Completed zone '{zoneName}': {processed} successful, {specialHandling} special handling, {failed} failed");
-            return results;
-        }
-
-        /// <summary>
-        /// Parse multiple LGB files from common locations (for backward compatibility)
-        /// </summary>
-        public Dictionary<string, LgbData> ParseCommonLgbFiles(int maxFiles = 50)
-        {
-            return ParseAllLgbFiles(maxFiles);
-        }
-
-        /// <summary>
-        /// Save discovered LGB paths to a file for future reference
-        /// </summary>
-        public void SaveDiscoveredPathsToFile(string filePath)
-        {
-            var allPaths = GetAvailableLgbFiles();
-            File.WriteAllLines(filePath, allPaths);
-            Console.WriteLine($"Saved {allPaths.Count} discovered LGB paths to: {filePath}");
-        }
-
-        // Include ParseLgbFromLuminaFile and other methods...
-        private LgbData ParseLgbFromLuminaFile(LgbFile lgbFile)
-        {
-            var lgbData = new LgbData
-            {
-                FilePath = lgbFile.FilePath?.Path ?? "Unknown",
-                LayerGroups = new List<LayerGroupData>(),
-                Header = new FileHeader
-                {
-                    FileID = "LGB1",
-                    FileSize = 0,
-                    TotalChunkCount = 1
-                },
-                ChunkHeader = new LayerChunk
-                {
-                    ChunkId = "LYR1",
-                    LayersCount = lgbFile.Layers.Length
-                },
-                Layers = new Layer[lgbFile.Layers.Length]
-            };
-
-            // Convert Lumina's LgbFile to our LgbData structure
-            for (int i = 0; i < lgbFile.Layers.Length; i++)
-            {
-                var layer = lgbFile.Layers[i];
-
-                var layerGroupData = new LayerGroupData
-                {
-                    LayerId = layer.LayerId,
-                    Name = layer.Name,
-                    InstanceObjects = new List<InstanceObjectData>()
-                };
-
-                var layerData = new Layer
-                {
-                    LayerId = layer.LayerId,
-                    Name = layer.Name,
-                    InstanceObjectCount = layer.InstanceObjects.Length,
-                    InstanceObjects = new InstanceObject[layer.InstanceObjects.Length]
-                };
-
-                for (int j = 0; j < layer.InstanceObjects.Length; j++)
-                {
-                    var instanceObj = layer.InstanceObjects[j];
-
-                    var instanceData = new InstanceObjectData
-                    {
-                        InstanceId = instanceObj.InstanceId,
-                        Name = instanceObj.Name,
-                        AssetType = instanceObj.AssetType.ToString(),
-                        Transform = new TransformData
-                        {
-                            Translation = new float[]
-                            {
-                                instanceObj.Transform.Translation.X,
-                                instanceObj.Transform.Translation.Y,
-                                instanceObj.Transform.Translation.Z
-                            },
-                            Rotation = new float[]
-                            {
-                                instanceObj.Transform.Rotation.X,
-                                instanceObj.Transform.Rotation.Y,
-                                instanceObj.Transform.Rotation.Z,
-                                0.0f
-                            },
-                            Scale = new float[]
-                            {
-                                instanceObj.Transform.Scale.X,
-                                instanceObj.Transform.Scale.Y,
-                                instanceObj.Transform.Scale.Z
-                            }
-                        },
-                        ObjectData = ParseObjectDataFromLumina(instanceObj)
-                    };
-
-                    var instanceObjData = new InstanceObject
-                    {
-                        InstanceId = instanceObj.InstanceId,
-                        Name = instanceObj.Name,
-                        AssetType = (LayerEntryType)instanceObj.AssetType,
-                        Transform = new Transformation
-                        {
-                            Translation = new Vector3
-                            {
-                                X = instanceObj.Transform.Translation.X,
-                                Y = instanceObj.Transform.Translation.Y,
-                                Z = instanceObj.Transform.Translation.Z
-                            },
-                            Rotation = new Vector4
-                            {
-                                X = instanceObj.Transform.Rotation.X,
-                                Y = instanceObj.Transform.Rotation.Y,
-                                Z = instanceObj.Transform.Rotation.Z,
-                                W = 0.0f
-                            },
-                            Scale = new Vector3
-                            {
-                                X = instanceObj.Transform.Scale.X,
-                                Y = instanceObj.Transform.Scale.Y,
-                                Z = instanceObj.Transform.Scale.Z
-                            }
-                        },
-                        ObjectData = ParseObjectDataFromLumina(instanceObj)
-                    };
-
-                    layerGroupData.InstanceObjects.Add(instanceData);
-                    layerData.InstanceObjects[j] = instanceObjData;
-                }
-
-                lgbData.LayerGroups.Add(layerGroupData);
-                lgbData.Layers[i] = layerData;
-            }
-
-            return lgbData;
-        }
-
-        private Dictionary<string, object> ParseObjectDataFromLumina(Lumina.Data.Parsing.Layer.LayerCommon.InstanceObject instanceObj)
-        {
-            var data = new Dictionary<string, object>();
-            data["RotationType"] = "Euler";
-
-            switch (instanceObj.AssetType)
-            {
-                case Lumina.Data.Parsing.Layer.LayerEntryType.EventNPC:
-                    if (instanceObj.Object is Lumina.Data.Parsing.Layer.LayerCommon.ENPCInstanceObject enpc)
-                    {
-                        data["BaseId"] = enpc.ParentData.ParentData.BaseId;
-                        data["PopWeather"] = enpc.ParentData.PopWeather;
-                        data["PopTimeStart"] = enpc.ParentData.PopTimeStart;
-                        data["PopTimeEnd"] = enpc.ParentData.PopTimeEnd;
-                        data["Behavior"] = enpc.Behavior;
-                    }
-                    break;
-
-                case Lumina.Data.Parsing.Layer.LayerEntryType.BG:
-                    if (instanceObj.Object is Lumina.Data.Parsing.Layer.LayerCommon.BGInstanceObject bg)
-                    {
-                        data["AssetPath"] = bg.AssetPath ?? "Unknown";
-                        data["CollisionAssetPath"] = bg.CollisionAssetPath ?? "None";
-                        data["CollisionType"] = bg.CollisionType.ToString();
-                        data["IsVisible"] = bg.IsVisible;
-                        data["RenderShadowEnabled"] = bg.RenderShadowEnabled;
-                        data["RenderLightShadowEnabled"] = bg.RenderLightShadowEnabled;
-                        data["RenderModelClipRange"] = bg.RenderModelClipRange;
+                        case "bah": areaIds.AddRange(new[] { "s1b1", "s1b2", "s1b3", "s1b4" }); break;
+                        case "dun": areaIds.AddRange(new[] { "s1d1", "s1d2", "s1d3", "s1d4", "s1d5" }); break;
+                        case "fld": areaIds.AddRange(new[] { "s1f1", "s1f2", "s1f3", "s1f4" }); break;
+                        case "twn": areaIds.AddRange(new[] { "s1t1", "s1t2", "s1t3" }); break;
                     }
                     break;
 
                 default:
-                    data["Type"] = instanceObj.AssetType.ToString();
-                    data["Note"] = "Object type parsed from Lumina";
+                    areaIds.AddRange(GenerateSystematicAreaIds(zone, areaType));
                     break;
             }
 
-            return data;
+            return areaIds;
         }
 
         public void Dispose()
@@ -965,7 +1151,15 @@ namespace LgbParser
             {
                 if (disposing)
                 {
+                    Console.WriteLine("🧹 Disposing GameLgbReader...");
+
                     _gameData?.Dispose();
+
+                    // Clear all collections
+                    _discoveredLgbPaths?.Clear();
+                    EntryTypeStats?.Clear();
+                    FileTypeStats?.Clear();
+                    ZoneStats?.Clear();
                 }
                 _disposed = true;
             }
