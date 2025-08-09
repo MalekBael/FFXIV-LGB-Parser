@@ -1,4 +1,8 @@
-﻿# LGB Parser
+
+[![.NET](https://github.com/MalekBael/FFXIV-LGB-Parser/actions/workflows/dotnet.yml/badge.svg)](https://github.com/MalekBael/FFXIV-LGB-Parser/actions/workflows/dotnet.yml)
+
+ 
+ # LGB Parser
 
 A tool for parsing and extracting data from Final Fantasy XIV (FFXIV) LGB files. This tool can work with both extracted LGB files and directly with FFXIV game installations using the Lumina library.
 
