@@ -578,6 +578,50 @@ namespace LgbParser
             }
         }
 
+        /// <summary>
+        /// ✅ SIMPLE: Simple cleanup and termination
+        /// </summary>
+        private static void SimpleTermination(int exitCode)
+        {
+            try
+            {
+                Console.WriteLine("🧹 Simple cleanup...");
+
+                _cancellationTokenSource?.Cancel();
+
+                if (_currentReader != null)
+                {
+                    try
+                    {
+                        _currentReader.Dispose();
+                    }
+                    catch
+                    {
+                        // Ignore disposal errors
+                    }
+                    _currentReader = null;
+                }
+
+                try
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                }
+                catch
+                {
+                    // Ignore GC errors
+                }
+
+                Console.WriteLine("✅ Simple cleanup complete.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️  Simple cleanup error: {ex.Message}");
+            }
+
+            // Don't force exit here, let the application terminate naturally
+        }
+
         private static void ShowHelp()
         {
             Console.WriteLine("LGB Parser - Extract data from Final Fantasy XIV LGB files");
