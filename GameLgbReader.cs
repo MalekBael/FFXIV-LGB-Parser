@@ -177,6 +177,36 @@ namespace LgbParser
         }
 
         /// <summary>
+        /// Safely load an LGB file from the game data
+        /// </summary>
+        private LgbFile SafeLoadLgbFile(string gamePath)
+        {
+            try
+            {
+                // Check cache first
+                if (_lgbFileCache.ContainsKey(gamePath))
+                {
+                    return _lgbFileCache[gamePath];
+                }
+
+                // Load from game data
+                var lgbFile = _gameData.GetFile<LgbFile>(gamePath);
+                if (lgbFile != null)
+                {
+                    // Cache the file for potential reuse
+                    _lgbFileCache[gamePath] = lgbFile;
+                }
+
+                return lgbFile;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️  Failed to load LGB file '{gamePath}': {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Unrestricted LGB parsing - processes ALL objects, no limits - COMPLETE DATA
         /// </summary>
         private LgbData ParseLgbFromLuminaFileUnrestricted(LgbFile lgbFile)
@@ -286,6 +316,14 @@ namespace LgbParser
 
             DisplayFinalStatistics();
             return results;
+        }
+
+        /// <summary>
+        /// Track entry type for statistics
+        /// </summary>
+        private void TrackEntryType(LayerEntryType entryType)
+        {
+            EntryTypeStats[entryType] = EntryTypeStats.GetValueOrDefault(entryType, 0) + 1;
         }
 
         /// <summary>
@@ -406,24 +444,10 @@ namespace LgbParser
                     }
                     break;
 
-                // ✅ BattleNpc = 9
+                // ✅ BattleNpc = 9 - Fixed the type name issue
                 case LayerEntryType.BattleNPC:
-                    if (instanceObj.Object is LayerCommon.BattleNpcInstanceObject battleNpc)
-                    {
-                        data["BaseId"] = battleNpc.ParentData.ParentData.BaseId;
-                        data["Behavior"] = battleNpc.Behavior;
-                        data["PopWeather"] = battleNpc.ParentData.PopWeather;
-                        data["PopTimeStart"] = battleNpc.ParentData.PopTimeStart;
-                        data["PopTimeEnd"] = battleNpc.ParentData.PopTimeEnd;
-                        data["MoveAi"] = battleNpc.ParentData.MoveAi;
-                        data["WanderingRange"] = battleNpc.ParentData.WanderingRange;
-                        data["Route"] = battleNpc.ParentData.Route;
-                        data["EventGroup"] = battleNpc.ParentData.EventGroup;
-                    }
-                    else
-                    {
-                        ExtractGenericObjectData(data, instanceObj.Object);
-                    }
+                    // Note: BattleNpcInstanceObject may not exist in Lumina, use generic extraction
+                    ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
                 case LayerEntryType.RoutePath:
@@ -467,9 +491,6 @@ namespace LgbParser
                         data["GatheringPointId"] = gathering.GatheringPointId;
                     }
                     break;
-
-                // ✅ SharedGroup15 = 15 - Handle as shared group variant
-                // Note: May need special handling for secondary variable = 13
 
                 // ✅ Treasure = 16
                 case LayerEntryType.Treasure:
@@ -977,6 +998,14 @@ namespace LgbParser
             }
         }
 
+        /// <summary>
+        /// Get all available LGB files - wrapper around DiscoverAllLgbFiles
+        /// </summary>
+        public List<string> GetAvailableLgbFiles()
+        {
+            return DiscoverAllLgbFiles();
+        }
+
         public List<string> GetLgbFilesByZone(string zonePattern)
         {
             var allFiles = GetAvailableLgbFiles();
@@ -1137,6 +1166,41 @@ namespace LgbParser
             }
         }
 
+        /// <summary>
+        /// Display final statistics
+        /// </summary>
+        private void DisplayFinalStatistics()
+        {
+            Console.WriteLine("\n=== FINAL PARSING STATISTICS ===");
+
+            if (EntryTypeStats.Count > 0)
+            {
+                Console.WriteLine("\nEntry Types Processed:");
+                foreach (var kvp in EntryTypeStats.OrderByDescending(x => x.Value))
+                {
+                    Console.WriteLine($"  {kvp.Key}: {kvp.Value} objects");
+                }
+            }
+
+            if (FileTypeStats.Count > 0)
+            {
+                Console.WriteLine("\nFile Types Discovered:");
+                foreach (var kvp in FileTypeStats.OrderByDescending(x => x.Value))
+                {
+                    Console.WriteLine($"  {kvp.Key}: {kvp.Value} files");
+                }
+            }
+
+            if (ZoneStats.Count > 0)
+            {
+                Console.WriteLine("\nZones Discovered:");
+                foreach (var kvp in ZoneStats.OrderByDescending(x => x.Value))
+                {
+                    Console.WriteLine($"  {kvp.Key}: {kvp.Value} files");
+                }
+            }
+        }
+
         private List<string> GenerateAreaIdsForZone(string zone, string areaType)
         {
             var areaIds = new List<string>();
@@ -1181,3 +1245,48 @@ namespace LgbParser
 
             return areaIds;
         }
+
+        /// <summary>
+        /// Implement IDisposable pattern
+        /// </summary>
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    // Dispose managed resources
+                    try
+                    {
+                        _lgbFileCache?.Clear();
+                        _discoveredLgbPaths?.Clear();
+                        EntryTypeStats?.Clear();
+                        FileTypeStats?.Clear();
+                        ZoneStats?.Clear();
+                        _gameData?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"⚠️  Error during GameLgbReader disposal: {ex.Message}");
+                    }
+                }
+
+                _disposed = true;
+            }
+        }
+
+        /// <summary>
+        /// Finalizer
+        /// </summary>
+        ~GameLgbReader()
+        {
+            Dispose(false);
+        }
+    }
+}

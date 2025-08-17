@@ -15,12 +15,12 @@ namespace LgbParser
         private static GameLgbReader _currentReader = null;
 
         // ✅ ENHANCED: More aggressive memory limits
-        private static readonly double MEMORY_LIMIT_PERCENTAGE = 0.40; 
-        private static readonly long ABSOLUTE_MEMORY_LIMIT = 3L * 1024 * 1024 * 1024; 
-        
+        private static readonly double MEMORY_LIMIT_PERCENTAGE = 0.40;
+        private static readonly long ABSOLUTE_MEMORY_LIMIT = 3L * 1024 * 1024 * 1024;
+
         private static readonly long _totalSystemMemory = GetTotalSystemMemory();
         private static readonly long _memoryLimit = Math.Min(
-            (long)(_totalSystemMemory * MEMORY_LIMIT_PERCENTAGE), 
+            (long)(_totalSystemMemory * MEMORY_LIMIT_PERCENTAGE),
             ABSOLUTE_MEMORY_LIMIT);
         private static readonly long _warningThreshold = (long)(_memoryLimit * 0.75);
         private static readonly long _cleanupThreshold = (long)(_memoryLimit * 0.60);
@@ -39,7 +39,7 @@ namespace LgbParser
 
             // ✅ SIMPLE FIX: Set hard memory limit and enforce it aggressively
             const long HARD_MEMORY_LIMIT = 2L * 1024 * 1024 * 1024; // 2GB hard limit
-            
+
             Console.CancelKeyPress += OnCancelKeyPress;
             AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
 
@@ -76,7 +76,7 @@ namespace LgbParser
             }
             finally
             {
-                SimpleTermination(0);
+                ForceTermination(0);
             }
         }
 
@@ -175,11 +175,11 @@ namespace LgbParser
                     if (parentProcess != null)
                     {
                         Console.WriteLine($"ℹ️  Running as child process of: {parentProcess.ProcessName}");
-                        detectedMemory = 6L * 1024 * 1024 * 1024;      
+                        detectedMemory = 6L * 1024 * 1024 * 1024;
                     }
                     else
                     {
-                        detectedMemory = 16L * 1024 * 1024 * 1024;     
+                        detectedMemory = 16L * 1024 * 1024 * 1024;
                     }
                     Console.WriteLine($"ℹ️  Final fallback: {detectedMemory / (1024.0 * 1024.0 * 1024.0):F1} GB");
                 }
@@ -189,7 +189,7 @@ namespace LgbParser
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️  All memory detection methods failed: {ex.Message}");
-                return 4L * 1024 * 1024 * 1024;    
+                return 4L * 1024 * 1024 * 1024;
             }
         }
 
@@ -368,7 +368,7 @@ namespace LgbParser
 
                 if (actualMemoryUsage > _memoryLimit)
                 {
-                    if (actualMemoryUsage > 4L * 1024 * 1024 * 1024)    
+                    if (actualMemoryUsage > 4L * 1024 * 1024 * 1024)
                     {
                         Console.WriteLine($"🚨 MEMORY LIMIT EXCEEDED!");
                         Console.WriteLine($"   Current Usage: {actualMemoryUsage / (1024.0 * 1024.0):F1} MB");
@@ -397,7 +397,7 @@ namespace LgbParser
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️  Memory check failed: {ex.Message}");
-                return true;      
+                return true;
             }
         }
 
@@ -479,7 +479,7 @@ namespace LgbParser
         private static void OnCancelKeyPress(object sender, ConsoleCancelEventArgs e)
         {
             Console.WriteLine("\n🛑 Cancellation requested...");
-            e.Cancel = true;    
+            e.Cancel = true;
             _cancellationTokenSource.Cancel();
 
             Thread.Sleep(500);
@@ -707,7 +707,7 @@ namespace LgbParser
         {
             Console.WriteLine("Discovering available LGB files...");
 
-            var files = reader.GetAvailableLgbFiles();
+            var files = reader.DiscoverAllLgbFiles();
 
             Console.WriteLine($"\nFound {files.Count} LGB files:");
             Console.WriteLine("================================================================================");
@@ -715,13 +715,13 @@ namespace LgbParser
             var groupedFiles = files.GroupBy(f =>
             {
                 var parts = f.Split('/');
-                return parts.Length >= 3 ? parts[2] : "Unknown";  
+                return parts.Length >= 3 ? parts[2] : "Unknown";
             }).OrderBy(g => g.Key);
 
             foreach (var group in groupedFiles)
             {
                 Console.WriteLine($"\n{group.Key.ToUpperInvariant()} ({group.Count()} files):");
-                foreach (var file in group.Take(10))      
+                foreach (var file in group.Take(10))
                 {
                     Console.WriteLine($"  {file}");
                 }
@@ -736,7 +736,7 @@ namespace LgbParser
         {
             Console.WriteLine("Analyzing available zones...");
 
-            var files = reader.GetAvailableLgbFiles();
+            var files = reader.DiscoverAllLgbFiles();
 
             var zoneStats = files
                 .GroupBy(f =>
@@ -778,7 +778,7 @@ namespace LgbParser
         {
             Console.WriteLine("Analyzing available file types...");
 
-            var files = reader.GetAvailableLgbFiles();
+            var files = reader.DiscoverAllLgbFiles();
 
             var typeStats = files
                 .GroupBy(f =>
@@ -818,7 +818,7 @@ namespace LgbParser
         private static void HandleBatchCommand(GameLgbReader reader, string[] args)
         {
             string outputFolder = "lgb_output";
-            string format = "text";   
+            string format = "text";
 
             var batchIndex = Array.IndexOf(args, "--batch");
             int currentArgIndex = batchIndex + 1;
@@ -972,7 +972,7 @@ namespace LgbParser
 
             string zoneName = args[zoneIndex + 1];
             string outputFolder = $"zone_{zoneName}_output";
-            string format = "text";   
+            string format = "text";
 
             int currentArgIndex = zoneIndex + 2;
 
@@ -1067,7 +1067,7 @@ namespace LgbParser
 
             string fileType = args[typeIndex + 1];
             string outputFolder = $"type_{fileType}_output";
-            string format = "text";   
+            string format = "text";
 
             int currentArgIndex = typeIndex + 2;
 
@@ -1475,7 +1475,7 @@ namespace LgbParser
             return new LgbData
             {
                 FilePath = filePath,
-                Layers = new Lumina.Data.Parsing.Layer.LayerCommon.Layer[0],      
+                Layers = new Lumina.Data.Parsing.Layer.LayerCommon.Layer[0],
                 Metadata = new Dictionary<string, object>
                 {
                     ["ParsedBy"] = "Limited File Mode",
