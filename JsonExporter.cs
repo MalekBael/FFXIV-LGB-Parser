@@ -3,174 +3,300 @@ using System.IO;
 using System.Text.Json;
 using System.Linq;
 using System;
+using System.Text; // ✅ ADD: For UTF8 encoding
 
 namespace LgbParser
 {
-    // ✅ FIXED: Use EXACTLY the same approach as the working text exporter
     public class LuminaJsonExporter : IExporter
     {
         public void Export(LgbData data, string outputPath)
         {
-            var jsonOutput = new
-            {
-                FilePath = data.FilePath,
-                Metadata = BuildMetadata(data),
-                Layers = BuildLayersFromLuminaData(data),
-                EnhancedObjectData = GetEnhancedObjectData(data)
-            };
+            // ✅ STREAMING: Write directly to FileStream using Utf8JsonWriter
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
+            using var writer = new Utf8JsonWriter(fileStream, new JsonWriterOptions 
+            { 
+                Indented = true 
+            });
 
-            // ✅ CRITICAL FIX: Add IncludeFields = true for struct serialization
-            var options = new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                IncludeFields = true,
-                PropertyNamingPolicy = null // Keep original property names
-            };
-
-            var json = JsonSerializer.Serialize(jsonOutput, options);
-            File.WriteAllText(outputPath, json);
+            WriteJsonToStream(writer, data);
         }
 
-        private object BuildMetadata(LgbData data)
+        private void WriteJsonToStream(Utf8JsonWriter writer, LgbData data)
         {
-            var metadata = new Dictionary<string, object>();
+            writer.WriteStartObject();
+
+            // Write FilePath
+            writer.WriteString("FilePath", data.FilePath);
+
+            // Write Metadata
+            writer.WritePropertyName("Metadata");
+            WriteMetadata(writer, data);
+
+            // Write Layers
+            writer.WritePropertyName("Layers");
+            WriteLayers(writer, data);
+
+            // Write EnhancedObjectData
+            writer.WritePropertyName("EnhancedObjectData");
+            WriteEnhancedObjectData(writer, data);
+
+            writer.WriteEndObject();
+        }
+
+        private void WriteMetadata(Utf8JsonWriter writer, LgbData data)
+        {
+            writer.WriteStartObject();
 
             foreach (var kvp in data.Metadata)
             {
                 if (kvp.Key != "EnhancedObjectData")
                 {
-                    metadata[kvp.Key] = kvp.Value;
+                    writer.WritePropertyName(kvp.Key);
+                    WriteJsonValue(writer, kvp.Value);
                 }
             }
 
             if (data.Metadata.ContainsKey("EnhancedObjectData"))
             {
                 var enhancedData = (Dictionary<uint, Dictionary<string, object>>)data.Metadata["EnhancedObjectData"];
-                metadata["EnhancedObjectDataCount"] = enhancedData.Count;
+                writer.WriteNumber("EnhancedObjectDataCount", enhancedData.Count);
             }
 
-            return metadata;
+            writer.WriteEndObject();
         }
 
-        // ✅ FIXED: Use direct Layer serialization instead of anonymous objects
-        private LayerData[] BuildLayersFromLuminaData(LgbData data)
+        private void WriteLayers(Utf8JsonWriter writer, LgbData data)
         {
-            var layers = new List<LayerData>();
+            writer.WriteStartArray();
 
-            // ✅ Use EXACTLY the same iteration as text exporter
             foreach (var layer in data.Layers)
             {
-                var layerObjects = new List<ObjectData>();
+                writer.WriteStartObject();
 
-                // ✅ Use EXACTLY the same condition as text exporter
-                if (layer.InstanceObjects != null && layer.InstanceObjects.Length > 0)
-                {
-                    foreach (var obj in layer.InstanceObjects)
-                    {
-                        var enhancedData = GetEnhancedDataForObject(data, obj.InstanceId);
+                // Layer properties
+                writer.WriteNumber("LayerId", layer.LayerId);
+                writer.WriteString("Name", layer.Name ?? "");
 
-                        layerObjects.Add(new ObjectData
-                        {
-                            InstanceId = obj.InstanceId,
-                            Name = obj.Name ?? "",
-                            Type = obj.AssetType.ToString(),
-                            Transform = new TransformData
-                            {
-                                Position = new PositionData
-                                {
-                                    X = Math.Round(obj.Transform.Translation.X, 3),
-                                    Y = Math.Round(obj.Transform.Translation.Y, 3),
-                                    Z = Math.Round(obj.Transform.Translation.Z, 3)
-                                },
-                                Rotation = new RotationData
-                                {
-                                    X = Math.Round(obj.Transform.Rotation.X, 3),
-                                    Y = Math.Round(obj.Transform.Rotation.Y, 3),
-                                    Z = Math.Round(obj.Transform.Rotation.Z, 3)
-                                },
-                                Scale = new ScaleData
-                                {
-                                    X = Math.Round(obj.Transform.Scale.X, 3),
-                                    Y = Math.Round(obj.Transform.Scale.Y, 3),
-                                    Z = Math.Round(obj.Transform.Scale.Z, 3)
-                                }
-                            },
-                            EnhancedData = enhancedData
-                        });
-                    }
-                }
+                // Layer Properties
+                writer.WritePropertyName("Properties");
+                WriteLayerProperties(writer, layer);
 
-                // ✅ Build layer set references
-                var layerSetReferences = new List<LayerSetRefData>();
-                if (layer.LayerSetReferences != null && layer.LayerSetReferences.Length > 0)
-                {
-                    foreach (var lsr in layer.LayerSetReferences)
-                    {
-                        layerSetReferences.Add(new LayerSetRefData
-                        {
-                            LayerSetId = lsr.LayerSetId
-                        });
-                    }
-                }
+                // Instance Objects
+                writer.WritePropertyName("InstanceObjects");
+                WriteInstanceObjects(writer, layer, data);
 
-                // ✅ Use EXACTLY the same field access as text exporter
-                layers.Add(new LayerData
-                {
-                    LayerId = layer.LayerId,
-                    Name = layer.Name ?? "",
-                    Properties = new LayerPropertiesData
-                    {
-                        InstanceObjectCount = layer.InstanceObjects.Length, // Direct access like text exporter
-                        ToolModeVisible = layer.ToolModeVisible != 0,
-                        ToolModeReadOnly = layer.ToolModeReadOnly != 0,
-                        IsBushLayer = layer.IsBushLayer != 0,
-                        PS3Visible = layer.PS3Visible != 0,
-                        IsTemporary = layer.IsTemporary != 0,
-                        IsHousing = layer.IsHousing != 0,
-                        FestivalID = layer.FestivalID,
-                        FestivalPhaseID = layer.FestivalPhaseID,
-                        VersionMask = layer.VersionMask
-                    },
-                    InstanceObjects = layerObjects.ToArray(),
-                    LayerSetReferences = layerSetReferences.ToArray()
-                });
+                // Layer Set References
+                writer.WritePropertyName("LayerSetReferences");
+                WriteLayerSetReferences(writer, layer);
+
+                writer.WriteEndObject();
             }
 
-            return layers.ToArray();
+            writer.WriteEndArray();
         }
 
-        private Dictionary<string, object> GetEnhancedDataForObject(LgbData data, uint instanceId)
+        private void WriteLayerProperties(Utf8JsonWriter writer, Lumina.Data.Parsing.Layer.LayerCommon.Layer layer)
         {
+            writer.WriteStartObject();
+
+            writer.WriteNumber("InstanceObjectCount", layer.InstanceObjects.Length);
+            writer.WriteBoolean("ToolModeVisible", layer.ToolModeVisible != 0);
+            writer.WriteBoolean("ToolModeReadOnly", layer.ToolModeReadOnly != 0);
+            writer.WriteBoolean("IsBushLayer", layer.IsBushLayer != 0);
+            writer.WriteBoolean("PS3Visible", layer.PS3Visible != 0);
+            writer.WriteBoolean("IsTemporary", layer.IsTemporary != 0);
+            writer.WriteBoolean("IsHousing", layer.IsHousing != 0);
+            writer.WriteNumber("FestivalID", layer.FestivalID);
+            writer.WriteNumber("FestivalPhaseID", layer.FestivalPhaseID);
+            writer.WriteNumber("VersionMask", layer.VersionMask);
+
+            writer.WriteEndObject();
+        }
+
+        private void WriteInstanceObjects(Utf8JsonWriter writer, Lumina.Data.Parsing.Layer.LayerCommon.Layer layer, LgbData data)
+        {
+            writer.WriteStartArray();
+
+            if (layer.InstanceObjects != null)
+            {
+                foreach (var obj in layer.InstanceObjects)
+                {
+                    writer.WriteStartObject();
+
+                    writer.WriteNumber("InstanceId", obj.InstanceId);
+                    writer.WriteString("Name", obj.Name ?? "");
+                    writer.WriteString("Type", obj.AssetType.ToString());
+
+                    // Transform
+                    writer.WritePropertyName("Transform");
+                    WriteTransform(writer, obj);
+
+                    // Enhanced Data
+                    writer.WritePropertyName("EnhancedData");
+                    WriteEnhancedDataForObject(writer, data, obj.InstanceId);
+
+                    writer.WriteEndObject();
+                }
+            }
+
+            writer.WriteEndArray();
+        }
+
+        private void WriteTransform(Utf8JsonWriter writer, Lumina.Data.Parsing.Layer.LayerCommon.InstanceObject obj)
+        {
+            writer.WriteStartObject();
+
+            // Position
+            writer.WritePropertyName("Position");
+            writer.WriteStartObject();
+            writer.WriteNumber("X", Math.Round(obj.Transform.Translation.X, 3));
+            writer.WriteNumber("Y", Math.Round(obj.Transform.Translation.Y, 3));
+            writer.WriteNumber("Z", Math.Round(obj.Transform.Translation.Z, 3));
+            writer.WriteEndObject();
+
+            // Rotation
+            writer.WritePropertyName("Rotation");
+            writer.WriteStartObject();
+            writer.WriteNumber("X", Math.Round(obj.Transform.Rotation.X, 3));
+            writer.WriteNumber("Y", Math.Round(obj.Transform.Rotation.Y, 3));
+            writer.WriteNumber("Z", Math.Round(obj.Transform.Rotation.Z, 3));
+            writer.WriteEndObject();
+
+            // Scale
+            writer.WritePropertyName("Scale");
+            writer.WriteStartObject();
+            writer.WriteNumber("X", Math.Round(obj.Transform.Scale.X, 3));
+            writer.WriteNumber("Y", Math.Round(obj.Transform.Scale.Y, 3));
+            writer.WriteNumber("Z", Math.Round(obj.Transform.Scale.Z, 3));
+            writer.WriteEndObject();
+
+            writer.WriteEndObject();
+        }
+
+        private void WriteLayerSetReferences(Utf8JsonWriter writer, Lumina.Data.Parsing.Layer.LayerCommon.Layer layer)
+        {
+            writer.WriteStartArray();
+
+            if (layer.LayerSetReferences != null)
+            {
+                foreach (var lsr in layer.LayerSetReferences)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteNumber("LayerSetId", lsr.LayerSetId);
+                    writer.WriteEndObject();
+                }
+            }
+
+            writer.WriteEndArray();
+        }
+
+        private void WriteEnhancedDataForObject(Utf8JsonWriter writer, LgbData data, uint instanceId)
+        {
+            writer.WriteStartObject();
+
             if (data.Metadata.ContainsKey("EnhancedObjectData"))
             {
                 var enhancedData = (Dictionary<uint, Dictionary<string, object>>)data.Metadata["EnhancedObjectData"];
                 if (enhancedData.ContainsKey(instanceId))
                 {
-                    return enhancedData[instanceId];
+                    foreach (var kvp in enhancedData[instanceId])
+                    {
+                        writer.WritePropertyName(kvp.Key);
+                        WriteJsonValue(writer, kvp.Value);
+                    }
                 }
             }
-            return new Dictionary<string, object>();
+
+            writer.WriteEndObject();
         }
 
-        private Dictionary<string, Dictionary<string, object>> GetEnhancedObjectData(LgbData data)
+        private void WriteEnhancedObjectData(Utf8JsonWriter writer, LgbData data)
         {
+            writer.WriteStartObject();
+
             if (data.Metadata.ContainsKey("EnhancedObjectData"))
             {
                 var enhancedData = (Dictionary<uint, Dictionary<string, object>>)data.Metadata["EnhancedObjectData"];
-                return enhancedData.ToDictionary(kvp => kvp.Key.ToString(), kvp => kvp.Value);
+                foreach (var kvp in enhancedData)
+                {
+                    writer.WritePropertyName(kvp.Key.ToString());
+                    writer.WriteStartObject();
+                    
+                    foreach (var innerKvp in kvp.Value)
+                    {
+                        writer.WritePropertyName(innerKvp.Key);
+                        WriteJsonValue(writer, innerKvp.Value);
+                    }
+                    
+                    writer.WriteEndObject();
+                }
             }
-            return new Dictionary<string, Dictionary<string, object>>();
+
+            writer.WriteEndObject();
         }
+
+        private void WriteJsonValue(Utf8JsonWriter writer, object value)
+        {
+            switch (value)
+            {
+                case null:
+                    writer.WriteNullValue();
+                    break;
+                case string s:
+                    writer.WriteStringValue(s);
+                    break;
+                case int i:
+                    writer.WriteNumberValue(i);
+                    break;
+                case uint ui:
+                    writer.WriteNumberValue(ui);
+                    break;
+                case long l:
+                    writer.WriteNumberValue(l);
+                    break;
+                case ulong ul:
+                    writer.WriteNumberValue(ul);
+                    break;
+                case float f:
+                    writer.WriteNumberValue(f);
+                    break;
+                case double d:
+                    writer.WriteNumberValue(d);
+                    break;
+                case bool b:
+                    writer.WriteBooleanValue(b);
+                    break;
+                case byte by:
+                    writer.WriteNumberValue(by);
+                    break;
+                case sbyte sb:
+                    writer.WriteNumberValue(sb);
+                    break;
+                case short sh:
+                    writer.WriteNumberValue(sh);
+                    break;
+                case ushort us:
+                    writer.WriteNumberValue(us);
+                    break;
+                default:
+                    // For complex objects, convert to string
+                    writer.WriteStringValue(value.ToString());
+                    break;
+            }
+        }
+
+        // Keep old data classes for compatibility...
+        // [Rest of the data classes remain the same]
     }
 
-    // ✅ Data classes for proper JSON serialization
+    // Keep all the existing data classes unchanged
     public class LayerData
     {
         public uint LayerId { get; set; }
-        public string Name { get; set; }
-        public LayerPropertiesData Properties { get; set; }
-        public ObjectData[] InstanceObjects { get; set; }
-        public LayerSetRefData[] LayerSetReferences { get; set; }
+        public string Name { get; set; } = "";
+        public LayerPropertiesData Properties { get; set; } = new();
+        public ObjectData[] InstanceObjects { get; set; } = Array.Empty<ObjectData>();
+        public LayerSetRefData[] LayerSetReferences { get; set; } = Array.Empty<LayerSetRefData>();
     }
 
     public class LayerPropertiesData
@@ -190,17 +316,17 @@ namespace LgbParser
     public class ObjectData
     {
         public uint InstanceId { get; set; }
-        public string Name { get; set; }
-        public string Type { get; set; }
-        public TransformData Transform { get; set; }
-        public Dictionary<string, object> EnhancedData { get; set; }
+        public string Name { get; set; } = "";
+        public string Type { get; set; } = "";
+        public TransformData Transform { get; set; } = new();
+        public Dictionary<string, object> EnhancedData { get; set; } = new();
     }
 
     public class TransformData
     {
-        public PositionData Position { get; set; }
-        public RotationData Rotation { get; set; }
-        public ScaleData Scale { get; set; }
+        public PositionData Position { get; set; } = new();
+        public RotationData Rotation { get; set; } = new();
+        public ScaleData Scale { get; set; } = new();
     }
 
     public class PositionData
@@ -229,7 +355,6 @@ namespace LgbParser
         public uint LayerSetId { get; set; }
     }
 
-    // ✅ LEGACY: Keep original exporter for compatibility
     public class JsonExporter : IExporter
     {
         public void Export(LgbData data, string outputPath)

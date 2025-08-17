@@ -11,34 +11,35 @@ namespace LgbParser
 {
     internal class Program
     {
-        // ✅ PERFORMANCE: Add cancellation support
         private static CancellationTokenSource _cancellationTokenSource = new();
-
         private static GameLgbReader _currentReader = null;
 
-        // ✅ MEMORY: Add memory management constants
-        private static readonly double MEMORY_LIMIT_PERCENTAGE = 0.60; // 60% of total RAM
-
+        // ✅ ENHANCED: More aggressive memory limits
+        private static readonly double MEMORY_LIMIT_PERCENTAGE = 0.40; 
+        private static readonly long ABSOLUTE_MEMORY_LIMIT = 3L * 1024 * 1024 * 1024; 
+        
         private static readonly long _totalSystemMemory = GetTotalSystemMemory();
-        private static readonly long _memoryLimit = (long)(_totalSystemMemory * MEMORY_LIMIT_PERCENTAGE);
-        private static readonly long _warningThreshold = (long)(_memoryLimit * 0.85); // 85% of limit
-        private static readonly long _cleanupThreshold = (long)(_memoryLimit * 0.75); // 75% of limit
+        private static readonly long _memoryLimit = Math.Min(
+            (long)(_totalSystemMemory * MEMORY_LIMIT_PERCENTAGE), 
+            ABSOLUTE_MEMORY_LIMIT);
+        private static readonly long _warningThreshold = (long)(_memoryLimit * 0.75);
+        private static readonly long _cleanupThreshold = (long)(_memoryLimit * 0.60);
+        private static readonly long _emergencyThreshold = (long)(_memoryLimit * 0.90);
 
-        // ✅ TERMINATION: Track if we're already terminating to prevent recursion
         private static volatile bool _isTerminating = false;
+        private static int _consecutiveMemoryWarnings = 0;
+        private static DateTime _lastMemoryCheck = DateTime.Now;
 
         private static void Main(string[] args)
         {
-            Console.WriteLine("LGB Parser Tool v2.0 - Enhanced with Memory Management");
+            Console.WriteLine("LGB Parser Tool -  TEST Memory Management");
             Console.WriteLine("=====================================================");
             Console.WriteLine($"Current Date/Time: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
-            Console.WriteLine($"User: MalekBael");
             Console.WriteLine();
 
-            // ✅ MEMORY: Display memory information
-            DisplayMemoryInfo();
-
-            // ✅ PERFORMANCE: Setup cancellation handlers
+            // ✅ SIMPLE FIX: Set hard memory limit and enforce it aggressively
+            const long HARD_MEMORY_LIMIT = 2L * 1024 * 1024 * 1024; // 2GB hard limit
+            
             Console.CancelKeyPress += OnCancelKeyPress;
             AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
 
@@ -50,7 +51,6 @@ namespace LgbParser
                     return;
                 }
 
-                // Check if this is game mode (direct FFXIV installation parsing)
                 if (args.Contains("--game"))
                 {
                     HandleGameMode(args);
@@ -66,8 +66,8 @@ namespace LgbParser
             }
             catch (OutOfMemoryException)
             {
-                Console.WriteLine("\n🚨 Out of memory! Initiating emergency cleanup...");
-                EmergencyMemoryCleanup();
+                Console.WriteLine("\n🚨 Out of memory! Terminating immediately...");
+                Environment.Exit(1);
             }
             catch (Exception ex)
             {
@@ -76,13 +76,12 @@ namespace LgbParser
             }
             finally
             {
-                // ✅ PERFORMANCE: Ensure cleanup and termination
-                ForceTermination(0);
+                SimpleTermination(0);
             }
         }
 
         /// <summary>
-        /// ✅ MEMORY: Get total system memory in bytes - SIMPLIFIED for .NET 8 compatibility
+        /// Get total system memory in bytes 
         /// </summary>
         private static long GetTotalSystemMemory()
         {
@@ -90,7 +89,6 @@ namespace LgbParser
             {
                 long detectedMemory = 0;
 
-                // Method 1: Try GC memory info (built-in .NET 8 method)
                 try
                 {
                     var memoryInfo = GC.GetGCMemoryInfo();
@@ -105,7 +103,6 @@ namespace LgbParser
                     Console.WriteLine($"⚠️  GC memory info failed: {ex.Message}");
                 }
 
-                // Method 2: Try WMI via command line (fallback)
                 if (detectedMemory == 0)
                 {
                     try
@@ -146,7 +143,6 @@ namespace LgbParser
                     }
                 }
 
-                // Method 3: Process-based estimation (enhanced for child processes)
                 if (detectedMemory == 0)
                 {
                     try
@@ -158,12 +154,10 @@ namespace LgbParser
                         if (parentProcess != null)
                         {
                             Console.WriteLine($"ℹ️  Running as child process of: {parentProcess.ProcessName}");
-                            // Conservative estimate for child processes: 16x working set (minimum 6GB)
                             detectedMemory = Math.Max(6L * 1024 * 1024 * 1024, workingSet * 16);
                         }
                         else
                         {
-                            // Standalone process: more generous estimate
                             detectedMemory = Math.Max(8L * 1024 * 1024 * 1024, workingSet * 20);
                         }
 
@@ -175,18 +169,17 @@ namespace LgbParser
                     }
                 }
 
-                // Final fallback
                 if (detectedMemory == 0)
                 {
                     var parentProcess = GetParentProcess();
                     if (parentProcess != null)
                     {
                         Console.WriteLine($"ℹ️  Running as child process of: {parentProcess.ProcessName}");
-                        detectedMemory = 6L * 1024 * 1024 * 1024; // 6GB minimum for child processes
+                        detectedMemory = 6L * 1024 * 1024 * 1024;      
                     }
                     else
                     {
-                        detectedMemory = 16L * 1024 * 1024 * 1024; // 16GB fallback for standalone
+                        detectedMemory = 16L * 1024 * 1024 * 1024;     
                     }
                     Console.WriteLine($"ℹ️  Final fallback: {detectedMemory / (1024.0 * 1024.0 * 1024.0):F1} GB");
                 }
@@ -196,8 +189,7 @@ namespace LgbParser
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️  All memory detection methods failed: {ex.Message}");
-                // Ultra-conservative fallback
-                return 4L * 1024 * 1024 * 1024; // 4GB absolute minimum
+                return 4L * 1024 * 1024 * 1024;    
             }
         }
 
@@ -218,7 +210,6 @@ namespace LgbParser
             }
             catch
             {
-                // Ignore errors in parent process detection
             }
             return null;
         }
@@ -260,7 +251,6 @@ namespace LgbParser
             }
             catch
             {
-                // Ignore errors
             }
             return 0;
         }
@@ -277,7 +267,6 @@ namespace LgbParser
             Console.WriteLine($"Full Output Path: {fullOutputPath}");
             Console.WriteLine($"Map Editor Process: {GetParentProcess()?.ProcessName ?? "Unknown"}");
 
-            // Show if the directory exists and has files
             if (Directory.Exists(fullOutputPath))
             {
                 var files = Directory.GetFiles(fullOutputPath, "*", SearchOption.AllDirectories);
@@ -310,7 +299,6 @@ namespace LgbParser
             Console.WriteLine("💾 MEMORY MANAGEMENT CONFIGURATION");
             Console.WriteLine("==================================");
 
-            // ✅ ENHANCED: Show detection method and current usage
             try
             {
                 var currentProcess = Process.GetCurrentProcess();
@@ -334,7 +322,6 @@ namespace LgbParser
                 Console.WriteLine($"Warning Threshold: {limitGB * 0.85:F1} GB");
                 Console.WriteLine($"Cleanup Threshold: {limitGB * 0.75:F1} GB");
 
-                // ✅ ENHANCED: Show if limit seems too high/low
                 if (limitGB > totalGB * 0.6)
                 {
                     Console.WriteLine($"⚠️  WARNING: Memory limit may be too high for system");
@@ -365,10 +352,8 @@ namespace LgbParser
                 var workingSet = currentProcess.WorkingSet64;
                 var privateMemory = currentProcess.PrivateMemorySize64;
 
-                // ✅ FIXED: Use more realistic memory calculation
                 var actualMemoryUsage = Math.Max(currentMemory, workingSet);
 
-                // ✅ DEBUG: Show actual values to understand the issue
                 var currentMemoryMB = currentMemory / (1024.0 * 1024.0);
                 var workingSetMB = workingSet / (1024.0 * 1024.0);
                 var privateMemoryMB = privateMemory / (1024.0 * 1024.0);
@@ -381,11 +366,9 @@ namespace LgbParser
                 Console.WriteLine($"   Using: {actualMemoryUsage / (1024.0 * 1024.0):F1} MB");
                 Console.WriteLine($"   Limit: {limitMB:F1} MB");
 
-                // ✅ FIXED: More reasonable memory limit check
                 if (actualMemoryUsage > _memoryLimit)
                 {
-                    // ✅ SAFETY: Only trigger if memory usage is actually problematic
-                    if (actualMemoryUsage > 4L * 1024 * 1024 * 1024) // 4GB hard limit
+                    if (actualMemoryUsage > 4L * 1024 * 1024 * 1024)    
                     {
                         Console.WriteLine($"🚨 MEMORY LIMIT EXCEEDED!");
                         Console.WriteLine($"   Current Usage: {actualMemoryUsage / (1024.0 * 1024.0):F1} MB");
@@ -414,7 +397,7 @@ namespace LgbParser
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️  Memory check failed: {ex.Message}");
-                return true; // Continue on memory check failure
+                return true;      
             }
         }
 
@@ -425,30 +408,37 @@ namespace LgbParser
         {
             try
             {
-                Console.WriteLine("🧹 Performing aggressive memory cleanup...");
+                Console.WriteLine("🧹 Performing enhanced memory cleanup...");
 
                 var beforeMemory = GC.GetTotalMemory(false);
 
-                // Multiple rounds of garbage collection
-                for (int i = 0; i < 5; i++)
+                // Force multiple GC cycles
+                for (int i = 0; i < 3; i++)
                 {
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
                     GC.WaitForPendingFinalizers();
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
                 }
 
-                // Compact Large Object Heap
+                // Compact large object heap
                 GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
                 GC.Collect();
+
+                // Clear any cached data in the reader
+                if (_currentReader != null)
+                {
+                    // This will be implemented in GameLgbReader
+                    _currentReader.ClearCaches();
+                }
 
                 var afterMemory = GC.GetTotalMemory(false);
                 var freed = (beforeMemory - afterMemory) / (1024.0 * 1024.0);
 
-                Console.WriteLine($"✅ Cleanup complete. Freed: {freed:F1} MB, Current: {afterMemory / (1024.0 * 1024.0):F1} MB");
+                Console.WriteLine($"✅ Cleanup freed: {freed:F1} MB, Current: {afterMemory / (1024.0 * 1024.0):F1} MB");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"⚠️  Cleanup error: {ex.Message}");
+                Console.WriteLine($"⚠️  Enhanced cleanup error: {ex.Message}");
             }
         }
 
@@ -461,14 +451,12 @@ namespace LgbParser
 
             try
             {
-                // Dispose current reader immediately
                 if (_currentReader != null)
                 {
                     _currentReader.Dispose();
                     _currentReader = null;
                 }
 
-                // Aggressive cleanup
                 for (int i = 0; i < 10; i++)
                 {
                     GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
@@ -491,10 +479,9 @@ namespace LgbParser
         private static void OnCancelKeyPress(object sender, ConsoleCancelEventArgs e)
         {
             Console.WriteLine("\n🛑 Cancellation requested...");
-            e.Cancel = true; // Prevent immediate termination
+            e.Cancel = true;    
             _cancellationTokenSource.Cancel();
 
-            // Give some time for cleanup
             Thread.Sleep(500);
             ForceTermination(1);
         }
@@ -513,7 +500,6 @@ namespace LgbParser
         /// </summary>
         private static void ForceTermination(int exitCode)
         {
-            // Prevent recursive calls
             if (_isTerminating)
             {
                 return;
@@ -524,10 +510,8 @@ namespace LgbParser
             {
                 Console.WriteLine("🧹 Performing rapid cleanup...");
 
-                // Cancel any ongoing operations
                 _cancellationTokenSource?.Cancel();
 
-                // Dispose the reader AGGRESSIVELY
                 if (_currentReader != null)
                 {
                     try
@@ -536,12 +520,10 @@ namespace LgbParser
                     }
                     catch
                     {
-                        // Ignore disposal errors
                     }
                     _currentReader = null;
                 }
 
-                // Quick cleanup - minimal time spent
                 try
                 {
                     GC.Collect();
@@ -549,7 +531,6 @@ namespace LgbParser
                 }
                 catch
                 {
-                    // Ignore cleanup errors
                 }
 
                 Console.WriteLine("✅ Cleanup complete.");
@@ -559,20 +540,16 @@ namespace LgbParser
                 Console.WriteLine($"⚠️  Cleanup error: {ex.Message}");
             }
 
-            // ✅ TERMINATION: Multiple termination strategies
             Console.WriteLine($"🚪 FORCING process termination (exit code: {exitCode})...");
 
-            // Strategy 1: Standard Environment.Exit (give it a moment)
             try
             {
                 Environment.Exit(exitCode);
             }
             catch
             {
-                // If that fails, continue to nuclear option
             }
 
-            // Strategy 2: Wait briefly then try again
             Thread.Sleep(100);
             try
             {
@@ -580,10 +557,8 @@ namespace LgbParser
             }
             catch
             {
-                // Continue to nuclear option
             }
 
-            // Strategy 3: NUCLEAR OPTION - Kill the process directly
             try
             {
                 Console.WriteLine("💥 NUCLEAR TERMINATION - Killing process directly...");
@@ -592,17 +567,14 @@ namespace LgbParser
             }
             catch
             {
-                // This should never fail, but just in case...
             }
 
-            // Strategy 4: If all else fails, try to abort the current thread
             try
             {
                 Thread.CurrentThread.Abort();
             }
             catch
             {
-                // Final fallback - should never reach here
             }
         }
 
@@ -660,7 +632,6 @@ namespace LgbParser
 
             string gamePath = args[gameIndex + 1];
 
-            // Validate game path
             if (!Directory.Exists(gamePath))
             {
                 Console.WriteLine($"Error: Game path does not exist: {gamePath}");
@@ -679,19 +650,10 @@ namespace LgbParser
             Console.WriteLine($"SqPack directory: {sqpackPath}");
             Console.WriteLine();
 
-            // ✅ REMOVED: Memory check before creating reader
-            // if (!CheckMemoryUsage())
-            // {
-            //     Console.WriteLine("❌ Insufficient memory available. Please close other applications and try again.");
-            //     return;
-            // }
-
-            // ✅ PERFORMANCE: Store reader reference for cleanup
             _currentReader = new GameLgbReader(gamePath);
 
             try
             {
-                // Handle different game mode commands
                 if (args.Contains("--list"))
                 {
                     HandleListCommand(_currentReader);
@@ -722,13 +684,11 @@ namespace LgbParser
                 }
                 else
                 {
-                    // Single file parsing from game
                     HandleSingleGameFileCommand(_currentReader, args, gameIndex);
                 }
             }
             finally
             {
-                // Ensure cleanup
                 if (_currentReader != null)
                 {
                     try
@@ -737,7 +697,6 @@ namespace LgbParser
                     }
                     catch
                     {
-                        // Ignore disposal errors
                     }
                     _currentReader = null;
                 }
@@ -756,13 +715,13 @@ namespace LgbParser
             var groupedFiles = files.GroupBy(f =>
             {
                 var parts = f.Split('/');
-                return parts.Length >= 3 ? parts[2] : "Unknown"; // Zone
+                return parts.Length >= 3 ? parts[2] : "Unknown";  
             }).OrderBy(g => g.Key);
 
             foreach (var group in groupedFiles)
             {
                 Console.WriteLine($"\n{group.Key.ToUpperInvariant()} ({group.Count()} files):");
-                foreach (var file in group.Take(10)) // Show first 10 per zone
+                foreach (var file in group.Take(10))      
                 {
                     Console.WriteLine($"  {file}");
                 }
@@ -856,24 +815,20 @@ namespace LgbParser
             }
         }
 
-        // ✅ KEEP OTHER BATCH METHODS SIMPLE - Same pattern as above
         private static void HandleBatchCommand(GameLgbReader reader, string[] args)
         {
             string outputFolder = "lgb_output";
-            string format = "text"; // Default format
+            string format = "text";   
 
-            // Check if output folder is specified
             var batchIndex = Array.IndexOf(args, "--batch");
             int currentArgIndex = batchIndex + 1;
 
-            // Parse output folder if specified
             if (currentArgIndex < args.Length && !args[currentArgIndex].StartsWith("--"))
             {
                 outputFolder = args[currentArgIndex];
                 currentArgIndex++;
             }
 
-            // Parse format if specified
             if (currentArgIndex < args.Length && !args[currentArgIndex].StartsWith("--"))
             {
                 format = args[currentArgIndex].ToLower();
@@ -881,36 +836,11 @@ namespace LgbParser
 
             DisplayOutputLocation(outputFolder);
 
-            Console.WriteLine($"Batch processing ALL LGB files to: {outputFolder}");
+            Console.WriteLine($"🚀 STREAMING BATCH: Processing ALL LGB files to: {outputFolder}");
             Console.WriteLine($"Output format: {format.ToUpper()}");
-            Console.WriteLine("This may take several minutes...");
-            Console.WriteLine("Press Ctrl+C to cancel and force cleanup.");
+            Console.WriteLine($"Memory-efficient mode: Parse → Export → Free → Repeat");
+            Console.WriteLine("Press Ctrl+C to cancel.");
             Console.WriteLine();
-
-            Dictionary<string, LgbData> results;
-            try
-            {
-                results = reader.ParseAllLgbFilesWithCancellation(_cancellationTokenSource.Token);
-                Console.WriteLine($"✅ Parsing completed successfully. Processing {results.Count} files for export...");
-
-                if (results.Count == 0)
-                {
-                    Console.WriteLine("❌ CRITICAL: No files were parsed!");
-                    return;
-                }
-
-                Console.WriteLine($"📋 Sample of parsed files:");
-                foreach (var kvp in results.Take(5))
-                {
-                    Console.WriteLine($"   {kvp.Key} - Layers: {kvp.Value.Layers.Length}");
-                }
-                Console.WriteLine();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Parsing failed: {ex.Message}");
-                return;
-            }
 
             try
             {
@@ -922,62 +852,66 @@ namespace LgbParser
                 int failed = 0;
                 string fileExtension = format == "json" ? ".json" : ".txt";
 
-                Console.WriteLine($"🚀 Starting export of {results.Count} files in {format.ToUpper()} format...");
-
-                foreach (var kvp in results)
-                {
-                    try
+                // ✅ MEMORY FIX: Use streaming parse-and-export
+                reader.ParseAllLgbFilesWithStreamingExport(
+                    _cancellationTokenSource.Token,
+                    // ✅ CALLBACK: Export each file immediately after parsing
+                    onFileParseCallback: (filePath, lgbData) =>
                     {
-                        _cancellationTokenSource.Token.ThrowIfCancellationRequested();
-
-                        // Path sanitization
-                        var safePath = kvp.Key.Replace('/', Path.DirectorySeparatorChar)
-                                             .Replace('\\', Path.DirectorySeparatorChar);
-
-                        foreach (char c in Path.GetInvalidPathChars())
+                        try
                         {
-                            safePath = safePath.Replace(c, '_');
-                        }
+                            var safePath = filePath.Replace('/', Path.DirectorySeparatorChar)
+                                                  .Replace('\\', Path.DirectorySeparatorChar);
 
-                        var pathParts = safePath.Split(Path.DirectorySeparatorChar);
-                        for (int i = 0; i < pathParts.Length; i++)
-                        {
-                            foreach (char c in Path.GetInvalidFileNameChars())
+                            foreach (char c in Path.GetInvalidPathChars())
                             {
-                                pathParts[i] = pathParts[i].Replace(c, '_');
+                                safePath = safePath.Replace(c, '_');
                             }
-                        }
-                        safePath = string.Join(Path.DirectorySeparatorChar, pathParts);
 
-                        var outputPath = Path.Combine(fullOutputPath, safePath + fileExtension);
-                        var outputDir = Path.GetDirectoryName(outputPath);
-
-                        if (!string.IsNullOrEmpty(outputDir))
-                        {
-                            Directory.CreateDirectory(outputDir);
-                        }
-
-                        // Export based on format
-                        if (format == "json")
-                        {
-                            var jsonExporter = new LuminaJsonExporter();
-                            jsonExporter.Export(kvp.Value, outputPath);
-                        }
-                        else
-                        {
-                            var textExporter = new LuminaTextExporter();
-                            textExporter.Export(kvp.Value, outputPath);
-                        }
-
-                        if (File.Exists(outputPath))
-                        {
-                            var fileInfo = new FileInfo(outputPath);
-                            if (fileInfo.Length > 0)
+                            var pathParts = safePath.Split(Path.DirectorySeparatorChar);
+                            for (int i = 0; i < pathParts.Length; i++)
                             {
-                                exported++;
-                                if (exported <= 5 || exported % 50 == 0)
+                                foreach (char c in Path.GetInvalidFileNameChars())
                                 {
-                                    Console.WriteLine($"📝 ✅ Successfully exported {exported}/{results.Count} files... ({exported * 100.0 / results.Count:F1}%)");
+                                    pathParts[i] = pathParts[i].Replace(c, '_');
+                                }
+                            }
+                            safePath = string.Join(Path.DirectorySeparatorChar, pathParts);
+
+                            var outputPath = Path.Combine(fullOutputPath, safePath + fileExtension);
+                            var outputDir = Path.GetDirectoryName(outputPath);
+
+                            if (!string.IsNullOrEmpty(outputDir))
+                            {
+                                Directory.CreateDirectory(outputDir);
+                            }
+
+                            // ✅ EXPORT: Write immediately using streaming JSON
+                            if (format == "json")
+                            {
+                                var jsonExporter = new LuminaJsonExporter();
+                                jsonExporter.Export(lgbData, outputPath);
+                            }
+                            else
+                            {
+                                var textExporter = new LuminaTextExporter();
+                                textExporter.Export(lgbData, outputPath);
+                            }
+
+                            if (File.Exists(outputPath))
+                            {
+                                var fileInfo = new FileInfo(outputPath);
+                                if (fileInfo.Length > 0)
+                                {
+                                    exported++;
+                                    if (exported <= 5 || exported % 25 == 0)
+                                    {
+                                        Console.WriteLine($"📝 ✅ Streamed {exported} files... (memory efficient)");
+                                    }
+                                }
+                                else
+                                {
+                                    failed++;
                                 }
                             }
                             else
@@ -985,35 +919,25 @@ namespace LgbParser
                                 failed++;
                             }
                         }
-                        else
+                        catch (Exception ex)
                         {
                             failed++;
+                            Console.WriteLine($"❌ Failed to export {filePath}: {ex.Message}");
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        Console.WriteLine($"\n⚠️  Export cancelled at {exported} files.");
-                        break;
-                    }
-                    catch (Exception ex)
+                    },
+                    // ✅ ERROR CALLBACK: Handle parse errors
+                    onFileErrorCallback: (filePath, exception) =>
                     {
                         failed++;
-                        Console.WriteLine($"❌ Failed to export {kvp.Key}: {ex.Message}");
-
-                        if (failed > 20)
-                        {
-                            Console.WriteLine($"⚠️  Too many failures ({failed}), stopping export.");
-                            break;
-                        }
+                        Console.WriteLine($"✗ Failed to parse {filePath}: {exception.Message}");
                     }
-                }
+                );
 
-                Console.WriteLine($"\n🎉 Batch processing complete!");
+                Console.WriteLine($"\n🎉 STREAMING BATCH COMPLETE!");
                 Console.WriteLine($"✅ Successfully exported: {exported} files");
                 Console.WriteLine($"❌ Failed: {failed} files");
                 Console.WriteLine($"📁 Output location: {fullOutputPath}");
 
-                // Verification
                 if (Directory.Exists(fullOutputPath))
                 {
                     var searchPattern = format == "json" ? "*.json" : "*.txt";
@@ -1033,7 +957,7 @@ namespace LgbParser
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Export process failed: {ex.Message}");
+                Console.WriteLine($"❌ Streaming batch failed: {ex.Message}");
             }
         }
 
@@ -1048,18 +972,16 @@ namespace LgbParser
 
             string zoneName = args[zoneIndex + 1];
             string outputFolder = $"zone_{zoneName}_output";
-            string format = "text"; // Default format
+            string format = "text";   
 
             int currentArgIndex = zoneIndex + 2;
 
-            // Parse output folder if specified
             if (currentArgIndex < args.Length && !args[currentArgIndex].StartsWith("--"))
             {
                 outputFolder = args[currentArgIndex];
                 currentArgIndex++;
             }
 
-            // Parse format if specified
             if (currentArgIndex < args.Length && !args[currentArgIndex].StartsWith("--"))
             {
                 format = args[currentArgIndex].ToLower();
@@ -1098,7 +1020,6 @@ namespace LgbParser
 
                         Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
 
-                        // Export based on format
                         if (format == "json")
                         {
                             var jsonExporter = new LuminaJsonExporter();
@@ -1146,18 +1067,16 @@ namespace LgbParser
 
             string fileType = args[typeIndex + 1];
             string outputFolder = $"type_{fileType}_output";
-            string format = "text"; // Default format
+            string format = "text";   
 
             int currentArgIndex = typeIndex + 2;
 
-            // Parse output folder if specified
             if (currentArgIndex < args.Length && !args[currentArgIndex].StartsWith("--"))
             {
                 outputFolder = args[currentArgIndex];
                 currentArgIndex++;
             }
 
-            // Parse format if specified
             if (currentArgIndex < args.Length && !args[currentArgIndex].StartsWith("--"))
             {
                 format = args[currentArgIndex].ToLower();
@@ -1196,7 +1115,6 @@ namespace LgbParser
 
                         Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
 
-                        // Export based on format
                         if (format == "json")
                         {
                             var jsonExporter = new LuminaJsonExporter();
@@ -1233,8 +1151,6 @@ namespace LgbParser
             }
         }
 
-        // ✅ KEEP ALL OTHER METHODS UNCHANGED - they are working correctly
-
         private static void HandleAnalyzeCommand(GameLgbReader reader, string[] args)
         {
             var analyzeIndex = Array.IndexOf(args, "--analyze");
@@ -1264,11 +1180,9 @@ namespace LgbParser
             {
                 var data = reader.ParseLgbFile(lgbFilePath);
 
-                // Save detailed analysis to file first
                 var safeFileName = lgbFilePath.Replace('/', '_').Replace('\\', '_');
                 var outputPath = $"analysis_{safeFileName}_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
 
-                // Create detailed analysis content
                 var detailedAnalysis = $"Enhanced LGB File Detailed Analysis\n" +
                                      $"===================================\n" +
                                      $"File: {lgbFilePath}\n" +
@@ -1277,24 +1191,19 @@ namespace LgbParser
                                      $"Tool Version: LGB Parser v2.0 - Enhanced\n" +
                                      $"Parser: GameLgbReader with Lumina Integration\n\n";
 
-                // Write the header first
                 File.WriteAllText(outputPath, detailedAnalysis);
 
-                // Use LuminaTextExporter to append the main analysis
                 var exporter = new LuminaTextExporter();
                 exporter.Export(data, outputPath + ".temp");
 
-                // Combine the files
                 var analysisContent = File.ReadAllText(outputPath + ".temp");
                 File.AppendAllText(outputPath, analysisContent);
                 File.Delete(outputPath + ".temp");
 
-                // Also display to console
                 Console.WriteLine(File.ReadAllText(outputPath));
 
                 Console.WriteLine($"\nDetailed analysis saved to: {outputPath}");
 
-                // Show enhanced statistics
                 Console.WriteLine("\n🔧 ENHANCED ANALYSIS FEATURES");
                 Console.WriteLine("=============================");
                 Console.WriteLine("This analysis includes:");
@@ -1414,12 +1323,10 @@ namespace LgbParser
             {
                 if (File.Exists(inputPath))
                 {
-                    // Single file processing
                     HandleSingleFile(inputPath, outputPath, format);
                 }
                 else if (Directory.Exists(inputPath))
                 {
-                    // Folder processing
                     HandleFolderProcessing(inputPath, outputPath, format);
                 }
                 else
@@ -1525,6 +1432,14 @@ namespace LgbParser
 
                     processed++;
                     Console.WriteLine($"✅ Processed: {relativePath}");
+
+                    if (processed % 25 == 0)
+                    {
+                        Console.WriteLine($"📝 ✅ Processed {processed}/{lgbFiles.Length} files... (triggering cleanup)");
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -1560,7 +1475,7 @@ namespace LgbParser
             return new LgbData
             {
                 FilePath = filePath,
-                Layers = new Lumina.Data.Parsing.Layer.LayerCommon.Layer[0], // Empty - limited file parsing
+                Layers = new Lumina.Data.Parsing.Layer.LayerCommon.Layer[0],      
                 Metadata = new Dictionary<string, object>
                 {
                     ["ParsedBy"] = "Limited File Mode",

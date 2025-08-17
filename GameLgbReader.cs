@@ -19,6 +19,8 @@ namespace LgbParser
         private bool _disposed = false;
         private List<string> _discoveredLgbPaths = null;
 
+        private Dictionary<string, LgbFile> _lgbFileCache = new();
+
         private static readonly string[] BaseZonePrefixes = {
             "air", "fst", "lak", "ocn", "roc", "sea", "wil", "zon",
         };
@@ -59,14 +61,37 @@ namespace LgbParser
             };
 
             _gameData = new GameData(sqpackPath, luminaOptions);
+            Console.WriteLine($"🎯 GameLgbReader initialized - NO MEMORY LIMITS");
         }
 
-        public Dictionary<string, LgbData> ParseAllLgbFilesWithCancellation(CancellationToken cancellationToken = default)
+        // ✅ SIMPLE: Cache clearing method
+        public void ClearCaches()
         {
-            var results = new Dictionary<string, LgbData>();
-            var allFiles = GetAvailableLgbFiles();
+            try
+            {
+                _lgbFileCache?.Clear();
+                _discoveredLgbPaths?.Clear();
+                EntryTypeStats?.Clear();
+                FileTypeStats?.Clear();
+                ZoneStats?.Clear();
 
-            Console.WriteLine($"🚀 UNRESTRICTED MODE: Processing {allFiles.Count} LGB files...");
+                Console.WriteLine("🧹 Caches cleared");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️  Cache clearing error: {ex.Message}");
+            }
+        }
+
+        // ✅ STREAMING: Process files one at a time with immediate export
+        public void ParseAllLgbFilesWithStreamingExport(
+            CancellationToken cancellationToken,
+            Action<string, LgbData> onFileParseCallback,
+            Action<string, Exception> onFileErrorCallback)
+        {
+            var allFiles = GetAvailableLgbFiles();
+            Console.WriteLine($"🚀 STREAMING: Processing {allFiles.Count} LGB files with immediate export...");
+            Console.WriteLine($"🎯 Using UNRESTRICTED parsing for complete data");
 
             int processed = 0;
             int failed = 0;
@@ -79,15 +104,23 @@ namespace LgbParser
 
                     try
                     {
+                        // ✅ FIX: Use UNRESTRICTED parsing for complete data
                         var data = ParseLgbFileUnrestricted(path);
                         if (data != null)
                         {
-                            results[path] = data;
+                            // ✅ CALLBACK: Immediately export this file before parsing the next
+                            onFileParseCallback(path, data);
                             processed++;
 
-                            if (processed % 50 == 0)
+                            // ✅ CLEANUP: Immediately free this file's data
+                            data = null;
+
+                            // ✅ GC: Every 3 files, force cleanup to keep memory low
+                            if (processed % 3 == 0)
                             {
-                                Console.WriteLine($"📝 Processed {processed}/{allFiles.Count} files...");
+                                GC.Collect();
+                                GC.WaitForPendingFinalizers();
+                                Console.WriteLine($"📝 Streamed {processed}/{allFiles.Count} files... (memory cleaned)");
                             }
                         }
                     }
@@ -98,27 +131,26 @@ namespace LgbParser
                     catch (Exception ex)
                     {
                         failed++;
-                        Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
+                        onFileErrorCallback(path, ex);
                     }
                 }
             }
             finally
             {
-                // Minimal cleanup
+                // Final cleanup
+                ClearCaches();
                 GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
 
-            Console.WriteLine($"\n=== UNRESTRICTED PARSING FINISHED ===");
+            Console.WriteLine($"\n=== STREAMING EXPORT FINISHED ===");
             Console.WriteLine($"Successfully processed: {processed}");
             Console.WriteLine($"Failed: {failed}");
             Console.WriteLine($"Total files: {allFiles.Count}");
-
-            DisplayFinalStatistics();
-            return results;
         }
 
         /// <summary>
-        /// Unrestricted single file parsing - no memory limits
+        /// Unrestricted single file parsing - no memory limits - COMPLETE DATA
         /// </summary>
         private LgbData ParseLgbFileUnrestricted(string gamePath)
         {
@@ -145,7 +177,7 @@ namespace LgbParser
         }
 
         /// <summary>
-        /// Unrestricted LGB parsing - processes ALL objects, no limits
+        /// Unrestricted LGB parsing - processes ALL objects, no limits - COMPLETE DATA
         /// </summary>
         private LgbData ParseLgbFromLuminaFileUnrestricted(LgbFile lgbFile)
         {
@@ -157,15 +189,12 @@ namespace LgbParser
                 {
                     ["LayerCount"] = lgbFile.Layers.Length,
                     ["ParsedAt"] = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC"),
-                    ["ProcessingMode"] = "Unrestricted Mode"
+                    ["ProcessingMode"] = "Unrestricted Streaming Mode - Full Data"
                 }
             };
 
             var processedObjects = 0;
             var enhancedObjectData = new Dictionary<uint, Dictionary<string, object>>();
-            var totalObjectsInFile = lgbFile.Layers?.Sum(l => l.InstanceObjects?.Length ?? 0) ?? 0;
-
-            Console.WriteLine($"  📋 File: {lgbData.FilePath} - {lgbFile.Layers?.Length ?? 0} layers, {totalObjectsInFile} objects");
 
             if (lgbFile.Layers != null)
             {
@@ -173,11 +202,11 @@ namespace LgbParser
                 {
                     if (layer.InstanceObjects != null)
                     {
-                        // Process ALL objects - no limits
                         foreach (var instanceObj in layer.InstanceObjects)
                         {
                             try
                             {
+                                // ✅ UNRESTRICTED: Use comprehensive parsing for complete data
                                 var enhancedData = ParseObjectDataFromLuminaComprehensive(instanceObj);
                                 enhancedObjectData[instanceObj.InstanceId] = enhancedData;
                                 processedObjects++;
@@ -197,25 +226,78 @@ namespace LgbParser
             }
 
             lgbData.Metadata["TotalObjectsProcessed"] = processedObjects;
-
-            Console.WriteLine($"    ✅ Processed all {processedObjects} objects");
-
             return lgbData;
         }
 
+        // ✅ LEGACY: Keep old method for compatibility (used by non-streaming)
+        public Dictionary<string, LgbData> ParseAllLgbFilesWithCancellation(CancellationToken cancellationToken = default)
+        {
+            var results = new Dictionary<string, LgbData>();
+            var allFiles = GetAvailableLgbFiles();
+
+            Console.WriteLine($"🚀 LEGACY: Processing {allFiles.Count} LGB files (NOT RECOMMENDED - HIGH MEMORY)...");
+
+            int processed = 0;
+            int failed = 0;
+
+            try
+            {
+                foreach (var path in allFiles)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        var data = ParseLgbFileUnrestricted(path);
+                        if (data != null)
+                        {
+                            results[path] = data;
+                            processed++;
+
+                            if (processed % 10 == 0)
+                            {
+                                Console.WriteLine($"📝 Processed {processed}/{allFiles.Count} files...");
+                                GC.Collect();
+                                GC.WaitForPendingFinalizers();
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        Console.WriteLine($"✗ Failed to parse {path}: {ex.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+
+            Console.WriteLine($"\n=== LEGACY PARSING FINISHED ===");
+            Console.WriteLine($"Successfully processed: {processed}");
+            Console.WriteLine($"Failed: {failed}");
+            Console.WriteLine($"Total files: {allFiles.Count}");
+
+            DisplayFinalStatistics();
+            return results;
+        }
+
         /// <summary>
-        /// Comprehensive object data parsing - handles ALL LGB entry types from LayerEntryType enum
+        /// ✅ COMPLETE: All LgbEntryTypes from SaintCoinach - comprehensive object parsing with all data types
         /// </summary>
         private Dictionary<string, object> ParseObjectDataFromLuminaComprehensive(LayerCommon.InstanceObject instanceObj)
         {
             var data = new Dictionary<string, object>();
 
             data["Type"] = instanceObj.AssetType.ToString();
-
-            // Track entry type statistics
             TrackEntryType(instanceObj.AssetType);
 
-            // Comprehensive extraction for ALL entry types using actual LayerCommon definitions
             switch (instanceObj.AssetType)
             {
                 case LayerEntryType.AssetNone:
@@ -223,6 +305,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ BgParts/Model = 1
                 case LayerEntryType.BG:
                     if (instanceObj.Object is LayerCommon.BGInstanceObject bg)
                     {
@@ -242,6 +325,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ Light = 3
                 case LayerEntryType.LayLight:
                     if (instanceObj.Object is LayerCommon.LightInstanceObject layLight)
                     {
@@ -256,6 +340,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ Vfx = 4
                 case LayerEntryType.VFX:
                     if (instanceObj.Object is LayerCommon.VFXInstanceObject vfx)
                     {
@@ -271,6 +356,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ PositionMarker = 5
                 case LayerEntryType.PositionMarker:
                     if (instanceObj.Object is LayerCommon.PositionMarkerInstanceObject positionMarker)
                     {
@@ -280,6 +366,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ Gimmick/SharedGroup6 = 6
                 case LayerEntryType.SharedGroup:
                     if (instanceObj.Object is LayerCommon.SharedGroupInstanceObject sharedGroup)
                     {
@@ -294,6 +381,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ Sound = 7
                 case LayerEntryType.Sound:
                     if (instanceObj.Object is LayerCommon.SoundInstanceObject sound)
                     {
@@ -302,6 +390,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ EventNpc = 8
                 case LayerEntryType.EventNPC:
                     if (instanceObj.Object is LayerCommon.ENPCInstanceObject enpc)
                     {
@@ -317,9 +406,24 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ BattleNpc = 9
                 case LayerEntryType.BattleNPC:
-                    // BNPCInstanceObject is internal struct, use generic extraction
-                    ExtractGenericObjectData(data, instanceObj.Object);
+                    if (instanceObj.Object is LayerCommon.BattleNpcInstanceObject battleNpc)
+                    {
+                        data["BaseId"] = battleNpc.ParentData.ParentData.BaseId;
+                        data["Behavior"] = battleNpc.Behavior;
+                        data["PopWeather"] = battleNpc.ParentData.PopWeather;
+                        data["PopTimeStart"] = battleNpc.ParentData.PopTimeStart;
+                        data["PopTimeEnd"] = battleNpc.ParentData.PopTimeEnd;
+                        data["MoveAi"] = battleNpc.ParentData.MoveAi;
+                        data["WanderingRange"] = battleNpc.ParentData.WanderingRange;
+                        data["Route"] = battleNpc.ParentData.Route;
+                        data["EventGroup"] = battleNpc.ParentData.EventGroup;
+                    }
+                    else
+                    {
+                        ExtractGenericObjectData(data, instanceObj.Object);
+                    }
                     break;
 
                 case LayerEntryType.RoutePath:
@@ -327,10 +431,10 @@ namespace LgbParser
                     break;
 
                 case LayerEntryType.Character:
-                    // CTCharacter is defined, use generic extraction
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ Aetheryte = 12
                 case LayerEntryType.Aetheryte:
                     if (instanceObj.Object is LayerCommon.AetheryteInstanceObject aetheryte)
                     {
@@ -339,6 +443,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ EnvSpace = 13 (mapped to EnvSet in Lumina)
                 case LayerEntryType.EnvSet:
                     if (instanceObj.Object is LayerCommon.EnvSetInstanceObject envSet)
                     {
@@ -355,10 +460,22 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ Gathering = 14
                 case LayerEntryType.Gathering:
                     if (instanceObj.Object is LayerCommon.GatheringInstanceObject gathering)
                     {
                         data["GatheringPointId"] = gathering.GatheringPointId;
+                    }
+                    break;
+
+                // ✅ SharedGroup15 = 15 - Handle as shared group variant
+                // Note: May need special handling for secondary variable = 13
+
+                // ✅ Treasure = 16
+                case LayerEntryType.Treasure:
+                    if (instanceObj.Object is LayerCommon.TreasureInstanceObject treasure)
+                    {
+                        data["NonpopInitZone"] = treasure.NonpopInitZone;
                     }
                     break;
 
@@ -379,13 +496,7 @@ namespace LgbParser
                     }
                     break;
 
-                case LayerEntryType.Treasure:
-                    if (instanceObj.Object is LayerCommon.TreasureInstanceObject treasure)
-                    {
-                        data["NonpopInitZone"] = treasure.NonpopInitZone;
-                    }
-                    break;
-
+                // ✅ Weapon = 39
                 case LayerEntryType.Weapon:
                     if (instanceObj.Object is LayerCommon.WeaponInstanceObject weapon)
                     {
@@ -397,6 +508,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ PopRange = 40
                 case LayerEntryType.PopRange:
                     if (instanceObj.Object is LayerCommon.PopRangeInstanceObject popRange)
                     {
@@ -407,6 +519,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ ExitRange = 41
                 case LayerEntryType.ExitRange:
                     if (instanceObj.Object is LayerCommon.ExitRangeInstanceObject exitRange)
                     {
@@ -427,6 +540,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ MapRange = 43
                 case LayerEntryType.MapRange:
                     if (instanceObj.Object is LayerCommon.MapRangeInstanceObject mapRange)
                     {
@@ -450,10 +564,12 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ NaviMeshRange = 44
                 case LayerEntryType.NaviMeshRange:
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ EventObject = 45
                 case LayerEntryType.EventObject:
                     if (instanceObj.Object is LayerCommon.EventInstanceObject eventObj)
                     {
@@ -466,6 +582,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ EnvLocation = 47
                 case LayerEntryType.EnvLocation:
                     if (instanceObj.Object is LayerCommon.EnvLocationInstanceObject envLocation)
                     {
@@ -478,6 +595,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ EventRange = 49
                 case LayerEntryType.EventRange:
                     if (instanceObj.Object is LayerCommon.EventRangeInstanceObject eventRange)
                     {
@@ -491,6 +609,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ QuestMarker = 51
                 case LayerEntryType.QuestMarker:
                     if (instanceObj.Object is LayerCommon.QuestMarkerInstanceObject questMarker)
                     {
@@ -518,6 +637,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ CollisionBox = 57
                 case LayerEntryType.CollisionBox:
                     if (instanceObj.Object is LayerCommon.CollisionBoxInstanceObject collisionBox)
                     {
@@ -531,11 +651,12 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ DoorRange = 58
                 case LayerEntryType.DoorRange:
-                    // DoorRangeInstanceObject is not fully implemented
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ LineVfx = 59
                 case LayerEntryType.LineVFX:
                     if (instanceObj.Object is LayerCommon.LineVFXInstanceObject lineVFX)
                     {
@@ -563,6 +684,7 @@ namespace LgbParser
                     ExtractGenericObjectData(data, instanceObj.Object);
                     break;
 
+                // ✅ ClientPath = 65
                 case LayerEntryType.ClientPath:
                     if (instanceObj.Object is LayerCommon.ClientPathInstanceObject clientPath)
                     {
@@ -571,6 +693,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ ServerPath = 66
                 case LayerEntryType.ServerPath:
                     if (instanceObj.Object is LayerCommon.ServerPathInstanceObject serverPath)
                     {
@@ -578,6 +701,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ GimmickRange = 67
                 case LayerEntryType.GimmickRange:
                     if (instanceObj.Object is LayerCommon.GimmickRangeInstanceObject gimmickRange)
                     {
@@ -592,6 +716,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ TargetMarker = 68
                 case LayerEntryType.TargetMarker:
                     if (instanceObj.Object is LayerCommon.TargetMarkerInstanceObject targetMarker)
                     {
@@ -600,6 +725,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ ChairMarker = 69
                 case LayerEntryType.ChairMarker:
                     if (instanceObj.Object is LayerCommon.ChairMarkerInstanceObject chairMarker)
                     {
@@ -610,14 +736,15 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ ClickableRange = 70
                 case LayerEntryType.ClickableRange:
                     if (instanceObj.Object is LayerCommon.ClickableRangeInstanceObject clickableRange)
                     {
-                        // This object only has padding, use generic extraction
                         ExtractGenericObjectData(data, clickableRange);
                     }
                     break;
 
+                // ✅ PrefetchRange = 71
                 case LayerEntryType.PrefetchRange:
                     if (instanceObj.Object is LayerCommon.PrefetchRangeInstanceObject prefetchRange)
                     {
@@ -628,6 +755,7 @@ namespace LgbParser
                     }
                     break;
 
+                // ✅ FateRange = 72
                 case LayerEntryType.FateRange:
                     if (instanceObj.Object is LayerCommon.FateRangeInstanceObject fateRange)
                     {
@@ -639,7 +767,12 @@ namespace LgbParser
                     }
                     break;
 
-                // Handle all other entry types that aren't explicitly defined in LayerCommon
+                // ✅ SphereCastRange = 75
+                case LayerEntryType.SphereCastRange:
+                    ExtractGenericObjectData(data, instanceObj.Object);
+                    break;
+
+                // ✅ Clip and related entries (reserved/unknown types)
                 case LayerEntryType.Clip:
                 case LayerEntryType.ClipCtrlPoint:
                 case LayerEntryType.ClipCamera:
@@ -664,7 +797,6 @@ namespace LgbParser
                 case LayerEntryType.Monster:
                 case LayerEntryType.PartyMember:
                 case LayerEntryType.KeepRange:
-                case LayerEntryType.SphereCastRange:
                 case LayerEntryType.IndoorObject:
                 case LayerEntryType.OutdoorObject:
                 case LayerEntryType.EditGroup:
@@ -677,50 +809,18 @@ namespace LgbParser
                     data["MaxAssetType"] = "MaxAssetType";
                     break;
 
-                // Handle any unknown types
                 default:
                     data["ObjectType"] = instanceObj.Object?.GetType().Name ?? "null";
                     data["UnknownType"] = instanceObj.AssetType.ToString();
+                    data["EntryTypeId"] = ((int)instanceObj.AssetType).ToString();
                     ExtractGenericObjectData(data, instanceObj.Object);
+                    Console.WriteLine($"    ⚠️  UNKNOWN ENTRY TYPE: {instanceObj.AssetType} (ID: {(int)instanceObj.AssetType})");
                     break;
             }
 
             return data;
         }
 
-        /// <summary>
-        /// Helper method to extract common data fields that most objects have
-        /// </summary>
-        private void ExtractCommonData(Dictionary<string, object> data, object obj)
-        {
-            if (obj == null) return;
-
-            var objType = obj.GetType();
-            var properties = objType.GetProperties();
-
-            foreach (var prop in properties)
-            {
-                try
-                {
-                    if (prop.CanRead && !prop.Name.Equals("GetType") && !data.ContainsKey(prop.Name))
-                    {
-                        var value = prop.GetValue(obj);
-                        if (value != null)
-                        {
-                            data[prop.Name] = value;
-                        }
-                    }
-                }
-                catch
-                {
-                    // Skip properties that can't be read
-                }
-            }
-        }
-
-        /// <summary>
-        /// Helper method to extract data from unknown object types using reflection
-        /// </summary>
         private void ExtractGenericObjectData(Dictionary<string, object> data, object obj)
         {
             if (obj == null)
@@ -750,7 +850,6 @@ namespace LgbParser
                     }
                     catch
                     {
-                        // Skip properties that can't be read
                     }
                 }
             }
@@ -760,15 +859,13 @@ namespace LgbParser
             }
         }
 
-        /// <summary>
-        /// Zone parsing - unrestricted
-        /// </summary>
+        // ✅ KEEP: All existing zone/type/discovery methods
         public Dictionary<string, LgbData> ParseLgbFilesByZoneWithCancellation(string zoneName, CancellationToken cancellationToken = default)
         {
             var results = new Dictionary<string, LgbData>();
             var files = GetLgbFilesByZone(zoneName);
 
-            Console.WriteLine($"🚀 UNRESTRICTED ZONE PARSING: {files.Count} files from zone '{zoneName}'...");
+            Console.WriteLine($"🚀 ZONE PARSING: {files.Count} files from zone '{zoneName}'...");
 
             int processed = 0;
             int failed = 0;
@@ -802,15 +899,12 @@ namespace LgbParser
             return results;
         }
 
-        /// <summary>
-        /// Type parsing - unrestricted
-        /// </summary>
         public Dictionary<string, LgbData> ParseLgbFilesByTypeWithCancellation(string fileType, CancellationToken cancellationToken = default)
         {
             var results = new Dictionary<string, LgbData>();
             var files = GetLgbFilesByType(fileType);
 
-            Console.WriteLine($"🚀 UNRESTRICTED TYPE PARSING: {files.Count} {fileType} files...");
+            Console.WriteLine($"🚀 TYPE PARSING: {files.Count} {fileType} files...");
 
             int processed = 0;
             int failed = 0;
@@ -844,7 +938,12 @@ namespace LgbParser
             return results;
         }
 
-        // File discovery - no limits
+        public LgbData ParseLgbFile(string gamePath)
+        {
+            return ParseLgbFileUnrestricted(gamePath);
+        }
+
+        // ✅ KEEP: All discovery methods unchanged
         public List<string> DiscoverAllLgbFiles()
         {
             if (_discoveredLgbPaths != null)
@@ -864,9 +963,8 @@ namespace LgbParser
                 Console.WriteLine("Phase 2: Systematic discovery...");
                 lgbFiles.UnionWith(DiscoverBySystematicTestingLimited());
 
-                // No file limits - take all discovered files
                 _discoveredLgbPaths = lgbFiles.ToList();
-                Console.WriteLine($"Total discovered: {_discoveredLgbPaths.Count} files (no limits applied)");
+                Console.WriteLine($"Total discovered: {_discoveredLgbPaths.Count} files");
 
                 GenerateDiscoveryStatistics();
                 return _discoveredLgbPaths;
@@ -879,6 +977,20 @@ namespace LgbParser
             }
         }
 
+        public List<string> GetLgbFilesByZone(string zonePattern)
+        {
+            var allFiles = GetAvailableLgbFiles();
+            return allFiles.Where(path => path.Contains(zonePattern, StringComparison.OrdinalIgnoreCase))
+                  .ToList();
+        }
+
+        public List<string> GetLgbFilesByType(string fileType)
+        {
+            var allFiles = GetAvailableLgbFiles();
+            return allFiles.Where(path => path.EndsWith($"/{fileType}.lgb", StringComparison.OrdinalIgnoreCase))
+                  .ToList();
+        }
+
         private List<string> DiscoverByKnownPatterns()
         {
             var discoveredFiles = new List<string>();
@@ -888,12 +1000,12 @@ namespace LgbParser
 
             foreach (var zone in knownZones)
             {
-                foreach (var areaType in AreaTypes) // No limits
+                foreach (var areaType in AreaTypes)
                 {
                     var areaIds = GenerateAreaIdsForZone(zone, areaType);
-                    foreach (var areaId in areaIds) // No limits
+                    foreach (var areaId in areaIds)
                     {
-                        foreach (var fileType in FileTypes) // No limits
+                        foreach (var fileType in FileTypes)
                         {
                             var testPath = $"bg/ffxiv/{zone}/{areaType}/{areaId}/level/{fileType}.lgb";
                             if (TestAndAddFile(testPath, discoveredFiles))
@@ -915,21 +1027,21 @@ namespace LgbParser
             Console.WriteLine("Comprehensive systematic testing...");
 
             int testCount = 0;
-            const int MAX_TESTS = 10000; // Increased limit
+            const int MAX_TESTS = 10000;
 
-            foreach (var prefix in BaseZonePrefixes) // No limits
+            foreach (var prefix in BaseZonePrefixes)
             {
-                foreach (var suffix in BaseZoneSuffixes) // No limits
+                foreach (var suffix in BaseZoneSuffixes)
                 {
                     var zone = $"{prefix}_{suffix}";
 
-                    foreach (var areaType in AreaTypes.Take(15)) // Increased limit
+                    foreach (var areaType in AreaTypes.Take(15))
                     {
-                        var areaIds = GenerateSystematicAreaIds(zone, areaType).Take(15); // Increased limit
+                        var areaIds = GenerateSystematicAreaIds(zone, areaType).Take(15);
 
                         foreach (var areaId in areaIds)
                         {
-                            foreach (var fileType in FileTypes) // No limits
+                            foreach (var fileType in FileTypes)
                             {
                                 var testPath = $"bg/ffxiv/{zone}/{areaType}/{areaId}/level/{fileType}.lgb";
                                 testCount++;
@@ -955,11 +1067,6 @@ namespace LgbParser
             return discoveredFiles;
         }
 
-        public LgbData ParseLgbFile(string gamePath)
-        {
-            return ParseLgbFileUnrestricted(gamePath);
-        }
-
         private List<string> GenerateSystematicAreaIds(string zone, string areaType)
         {
             var areaIds = new List<string>();
@@ -970,13 +1077,12 @@ namespace LgbParser
             var zoneNumber = parts[1].Substring(1);
             var areaLetter = areaType.Substring(0, 1);
 
-            // Increased ID generation
-            for (int i = 1; i <= 10; i++) // Increased from 5
+            for (int i = 1; i <= 10; i++)
             {
                 areaIds.Add($"{zoneLetter}{zoneNumber}{areaLetter}{i}");
             }
 
-            for (char c = 'a'; c <= 'j'; c++) // Increased from 'e'
+            for (char c = 'a'; c <= 'j'; c++)
             {
                 areaIds.Add($"{zoneLetter}{zoneNumber}{areaLetter}{c}");
             }
@@ -997,7 +1103,6 @@ namespace LgbParser
             }
             catch
             {
-                // Ignore errors and continue
             }
             return false;
         }
@@ -1032,68 +1137,6 @@ namespace LgbParser
             }
         }
 
-        private void TrackEntryType(LayerEntryType entryType)
-        {
-            EntryTypeStats[entryType] = EntryTypeStats.GetValueOrDefault(entryType, 0) + 1;
-        }
-
-        private void DisplayFinalStatistics()
-        {
-            Console.WriteLine($"\n=== FINAL STATISTICS (Unrestricted Mode) ===");
-            foreach (var kvp in EntryTypeStats.OrderByDescending(x => x.Value))
-            {
-                Console.WriteLine($"{kvp.Key}: {kvp.Value} instances");
-            }
-
-            if (EntryTypeStats.ContainsKey(LayerEntryType.FateRange))
-            {
-                Console.WriteLine($"\n🎉 SUCCESS: Found {EntryTypeStats[LayerEntryType.FateRange]} FateRange instances!");
-            }
-            else
-            {
-                Console.WriteLine($"\n⚠️  No FateRange instances found in current file set.");
-            }
-
-            Console.WriteLine($"\nTotal Entry Types Discovered: {EntryTypeStats.Count}");
-            Console.WriteLine($"Total Object Instances: {EntryTypeStats.Values.Sum()}");
-        }
-
-        public List<string> GetLgbFilesByZone(string zonePattern)
-        {
-            var allFiles = GetAvailableLgbFiles();
-            return allFiles.Where(path => path.Contains(zonePattern, StringComparison.OrdinalIgnoreCase))
-                          .ToList();
-        }
-
-        public List<string> GetLgbFilesByType(string fileType)
-        {
-            var allFiles = GetAvailableLgbFiles();
-            return allFiles.Where(path => path.EndsWith($"/{fileType}.lgb", StringComparison.OrdinalIgnoreCase))
-                          .ToList();
-        }
-
-        public List<string> GetAvailableLgbFiles() => DiscoverAllLgbFiles();
-
-        public bool LgbFileExists(string gamePath) => _gameData.FileExists(gamePath);
-
-        private LgbFile SafeLoadLgbFile(string gamePath)
-        {
-            try
-            {
-                var lgbFile = _gameData.GetFile<LgbFile>(gamePath);
-                if (lgbFile != null && lgbFile.Layers != null && lgbFile.Layers.Length >= 0)
-                {
-                    return lgbFile;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"    Loading failed: {ex.Message}");
-                throw;
-            }
-            return null;
-        }
-
         private List<string> GenerateAreaIdsForZone(string zone, string areaType)
         {
             var areaIds = new List<string>();
@@ -1109,7 +1152,7 @@ namespace LgbParser
                 case "fst_f1":
                     switch (areaType)
                     {
-                        case "bah": areaIds.AddRange(new[] { "f1b1", "f1b2", "f1b3", "f1b4", "f1b5" }); break; // Increased
+                        case "bah": areaIds.AddRange(new[] { "f1b1", "f1b2", "f1b3", "f1b4", "f1b5" }); break;
                         case "cnt": areaIds.AddRange(new[] { "f1c1", "f1c2", "f1c3" }); break;
                         case "dun": areaIds.AddRange(new[] { "f1d1", "f1d2", "f1d3", "f1d4", "f1d5" }); break;
                         case "evt": areaIds.AddRange(new[] { "f1e4", "f1e5", "f1e1", "f1e2", "f1e3" }); break;
@@ -1138,31 +1181,3 @@ namespace LgbParser
 
             return areaIds;
         }
-
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        protected virtual void Dispose(bool disposing)
-        {
-            if (!_disposed)
-            {
-                if (disposing)
-                {
-                    Console.WriteLine("🧹 Disposing GameLgbReader...");
-
-                    _gameData?.Dispose();
-
-                    // Clear all collections
-                    _discoveredLgbPaths?.Clear();
-                    EntryTypeStats?.Clear();
-                    FileTypeStats?.Clear();
-                    ZoneStats?.Clear();
-                }
-                _disposed = true;
-            }
-        }
-    }
-}

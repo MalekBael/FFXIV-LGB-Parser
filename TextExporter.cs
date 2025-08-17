@@ -12,7 +12,6 @@ namespace LgbParser
         void Export(LgbData data, string outputPath);
     }
 
-    // ✅ NEW: Enhanced exporter for Lumina-based LgbData
     public class LuminaTextExporter : IExporter
     {
         public void Export(LgbData data, string outputPath)
@@ -34,7 +33,6 @@ namespace LgbParser
 
             sb.AppendLine();
 
-            // Export all layers using Lumina data
             foreach (var layer in data.Layers)
             {
                 sb.AppendLine($"Layer [{layer.LayerId}]: {layer.Name}");
@@ -57,17 +55,14 @@ namespace LgbParser
                         sb.AppendLine($"  Object [{obj.InstanceId}]: {obj.Name}");
                         sb.AppendLine($"    Type: {obj.AssetType}");
                         sb.AppendLine($"    Position: ({obj.Transform.Translation.X:F3}, {obj.Transform.Translation.Y:F3}, {obj.Transform.Translation.Z:F3})");
-                        // ✅ FIXED: Lumina uses Vector3 for rotation (Euler angles), not Vector4 (quaternion)
                         sb.AppendLine($"    Rotation: ({obj.Transform.Rotation.X:F3}, {obj.Transform.Rotation.Y:F3}, {obj.Transform.Rotation.Z:F3})");
                         sb.AppendLine($"    Scale: ({obj.Transform.Scale.X:F3}, {obj.Transform.Scale.Y:F3}, {obj.Transform.Scale.Z:F3})");
 
-                        // Show enhanced object data if available
                         if (data.Metadata.ContainsKey("EnhancedObjectData"))
                         {
                             var enhancedData = (Dictionary<uint, Dictionary<string, object>>)data.Metadata["EnhancedObjectData"];
                             if (enhancedData.ContainsKey(obj.InstanceId))
                             {
-                                sb.AppendLine($"    Enhanced Data:");
                                 foreach (var kvp in enhancedData[obj.InstanceId])
                                 {
                                     sb.AppendLine($"      {kvp.Key}: {kvp.Value}");
@@ -78,7 +73,6 @@ namespace LgbParser
                     }
                 }
 
-                // Show layer set references if available
                 if (layer.LayerSetReferences != null && layer.LayerSetReferences.Length > 0)
                 {
                     sb.AppendLine($"  Layer Set References:");
@@ -90,13 +84,12 @@ namespace LgbParser
                 }
             }
 
-            // Show metadata
             if (data.Metadata.Count > 0)
             {
                 sb.AppendLine("=== Metadata ===");
                 foreach (var kvp in data.Metadata)
                 {
-                    if (kvp.Key != "EnhancedObjectData") // Skip large nested data
+                    if (kvp.Key != "EnhancedObjectData")     
                     {
                         sb.AppendLine($"{kvp.Key}: {kvp.Value}");
                     }
@@ -112,12 +105,10 @@ namespace LgbParser
         }
     }
 
-    // ✅ LEGACY: Keep original exporter for compatibility
     public class TextExporter : IExporter
     {
         public void Export(LgbData data, string outputPath)
         {
-            // Delegate to the new enhanced exporter
             var enhancedExporter = new LuminaTextExporter();
             enhancedExporter.Export(data, outputPath);
         }
