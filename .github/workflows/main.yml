@@ -1,0 +1,89 @@
+name: .NET Core Desktop
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
+
+    runs-on: windows-latest
+
+    env:
+      Solution_Name: LGB-Parser.sln                    # Replace with your actual solution name
+      Project_Path: LGB-Parser.csproj                  # Replace with your actual project file
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    # Install the .NET Core workload
+    - name: Install .NET Core
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # Restore dependencies
+    - name: Restore dependencies
+      run: dotnet restore $env:Solution_Name
+
+    # Build the application
+    - name: Build
+      run: dotnet build $env:Solution_Name --configuration ${{ matrix.configuration }} --no-restore
+
+    # Execute unit tests (if you have any)
+    - name: Execute unit tests
+      run: dotnet test $env:Solution_Name --configuration ${{ matrix.configuration }} --no-build --verbosity normal
+      continue-on-error: true
+
+    # Publish self-contained executable for Windows
+    - name: Publish Windows x64
+      run: dotnet publish $env:Project_Path --configuration ${{ matrix.configuration }} --runtime win-x64 --self-contained true --output ./publish/win-x64
+      
+    # Publish self-contained executable for Linux
+    - name: Publish Linux x64
+      run: dotnet publish $env:Project_Path --configuration ${{ matrix.configuration }} --runtime linux-x64 --self-contained true --output ./publish/linux-x64
+
+    # Create ZIP archives for distribution
+    - name: Create Windows ZIP
+      run: |
+        Compress-Archive -Path ./publish/win-x64/* -DestinationPath ./LGB-Parser-win-x64-${{ matrix.configuration }}.zip
+        
+    - name: Create Linux ZIP
+      run: |
+        tar -czf ./LGB-Parser-linux-x64-${{ matrix.configuration }}.tar.gz -C ./publish/linux-x64 .
+
+    # Upload Windows build artifacts
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: LGB-Parser-Windows-${{ matrix.configuration }}
+        path: ./LGB-Parser-win-x64-${{ matrix.configuration }}.zip
+
+    # Upload Linux build artifacts
+    - name: Upload Linux artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: LGB-Parser-Linux-${{ matrix.configuration }}
+        path: ./LGB-Parser-linux-x64-${{ matrix.configuration }}.tar.gz
+
+    # Upload raw executables for Windows
+    - name: Upload Windows executables
+      uses: actions/upload-artifact@v4
+      with:
+        name: LGB-Parser-Windows-Executable-${{ matrix.configuration }}
+        path: ./publish/win-x64/
+
+    # Upload raw executables for Linux  
+    - name: Upload Linux executables
+      uses: actions/upload-artifact@v4
+      with:
+        name: LGB-Parser-Linux-Executable-${{ matrix.configuration }}
+        path: ./publish/linux-x64/
