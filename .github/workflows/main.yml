@@ -11,7 +11,7 @@ jobs:
   build:
     strategy:
       matrix:
-        configuration: [Debug]
+        configuration: [Release]
 
     runs-on: windows-latest
 
@@ -89,14 +89,11 @@ jobs:
         name: LGB-Parser-Linux-Executable-${{ matrix.configuration }}
         path: ./publish/linux-x64/
 
-  # NEW: Release job that runs only for Release builds and version tags
+  # FIXED: Release job without matrix dependency
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && matrix.configuration == 'Release'
-    strategy:
-      matrix:
-        configuration: [Release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     
     steps:
     - name: Download Windows artifacts
