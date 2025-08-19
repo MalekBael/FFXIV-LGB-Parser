@@ -1,4 +1,6 @@
 name: .NET Core Desktop
+permissions:
+  contents: write
 
 on:
   push:
