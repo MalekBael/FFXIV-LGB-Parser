@@ -13,6 +13,10 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+	  <None Remove="lgb_filepaths.txt" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<None Include="LGB-Parser.sln" />
 	</ItemGroup>
 

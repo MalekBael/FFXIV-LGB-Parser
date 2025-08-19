@@ -3,7 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Linq;
 using System;
-using System.Text; // ✅ ADD: For UTF8 encoding
+using System.Text;      
 
 namespace LgbParser
 {
@@ -11,7 +11,6 @@ namespace LgbParser
     {
         public void Export(LgbData data, string outputPath)
         {
-            // ✅ STREAMING: Write directly to FileStream using Utf8JsonWriter
             using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
             using var writer = new Utf8JsonWriter(fileStream, new JsonWriterOptions 
             { 
@@ -25,18 +24,14 @@ namespace LgbParser
         {
             writer.WriteStartObject();
 
-            // Write FilePath
             writer.WriteString("FilePath", data.FilePath);
 
-            // Write Metadata
             writer.WritePropertyName("Metadata");
             WriteMetadata(writer, data);
 
-            // Write Layers
             writer.WritePropertyName("Layers");
             WriteLayers(writer, data);
 
-            // Write EnhancedObjectData
             writer.WritePropertyName("EnhancedObjectData");
             WriteEnhancedObjectData(writer, data);
 
@@ -73,19 +68,15 @@ namespace LgbParser
             {
                 writer.WriteStartObject();
 
-                // Layer properties
                 writer.WriteNumber("LayerId", layer.LayerId);
                 writer.WriteString("Name", layer.Name ?? "");
 
-                // Layer Properties
                 writer.WritePropertyName("Properties");
                 WriteLayerProperties(writer, layer);
 
-                // Instance Objects
                 writer.WritePropertyName("InstanceObjects");
                 WriteInstanceObjects(writer, layer, data);
 
-                // Layer Set References
                 writer.WritePropertyName("LayerSetReferences");
                 WriteLayerSetReferences(writer, layer);
 
@@ -127,11 +118,9 @@ namespace LgbParser
                     writer.WriteString("Name", obj.Name ?? "");
                     writer.WriteString("Type", obj.AssetType.ToString());
 
-                    // Transform
                     writer.WritePropertyName("Transform");
                     WriteTransform(writer, obj);
 
-                    // Enhanced Data
                     writer.WritePropertyName("EnhancedData");
                     WriteEnhancedDataForObject(writer, data, obj.InstanceId);
 
@@ -146,7 +135,6 @@ namespace LgbParser
         {
             writer.WriteStartObject();
 
-            // Position
             writer.WritePropertyName("Position");
             writer.WriteStartObject();
             writer.WriteNumber("X", Math.Round(obj.Transform.Translation.X, 3));
@@ -154,7 +142,6 @@ namespace LgbParser
             writer.WriteNumber("Z", Math.Round(obj.Transform.Translation.Z, 3));
             writer.WriteEndObject();
 
-            // Rotation
             writer.WritePropertyName("Rotation");
             writer.WriteStartObject();
             writer.WriteNumber("X", Math.Round(obj.Transform.Rotation.X, 3));
@@ -162,7 +149,6 @@ namespace LgbParser
             writer.WriteNumber("Z", Math.Round(obj.Transform.Rotation.Z, 3));
             writer.WriteEndObject();
 
-            // Scale
             writer.WritePropertyName("Scale");
             writer.WriteStartObject();
             writer.WriteNumber("X", Math.Round(obj.Transform.Scale.X, 3));
@@ -279,17 +265,13 @@ namespace LgbParser
                     writer.WriteNumberValue(us);
                     break;
                 default:
-                    // For complex objects, convert to string
                     writer.WriteStringValue(value.ToString());
                     break;
             }
         }
 
-        // Keep old data classes for compatibility...
-        // [Rest of the data classes remain the same]
     }
 
-    // Keep all the existing data classes unchanged
     public class LayerData
     {
         public uint LayerId { get; set; }
