@@ -3,7 +3,6 @@ name: .NET Core Desktop
 on:
   push:
     branches: [ "master" ]
-    tags: [ "v*" ]  # Trigger on version tags
   pull_request:
     branches: [ "master" ]
 
@@ -89,11 +88,11 @@ jobs:
         name: LGB-Parser-Linux-Executable-${{ matrix.configuration }}
         path: ./publish/linux-x64/
 
-  # FIXED: Release job without matrix dependency
+  # CHANGED: Release job now triggers on every push to master
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     
     steps:
     - name: Download Windows artifacts
@@ -108,9 +107,9 @@ jobs:
         name: LGB-Parser-Linux-Release
         path: ./release-assets/
 
-    - name: Get version from tag
+    - name: Generate version number
       id: version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      run: echo "VERSION=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
@@ -120,12 +119,8 @@ jobs:
         body: |
           ## LGB Parser Release ${{ steps.version.outputs.VERSION }}
           
-          ### Changes
-          - Optimized memory management and performance
-          - Improved Lumina integration
-          - Enhanced JSON export functionality
-          - Cross-platform support (Windows/Linux)
-          
+          Auto-generated release from commit: ${{ github.sha }}
+                  
           ### Downloads
           - **Windows**: Download `LGB-Parser-win-x64-Release.zip`
           - **Linux**: Download `LGB-Parser-linux-x64-Release.tar.gz`
