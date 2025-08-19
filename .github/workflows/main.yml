@@ -3,6 +3,7 @@ name: .NET Core Desktop
 on:
   push:
     branches: [ "master" ]
+    tags: [ "v*" ]  # Trigger on version tags
   pull_request:
     branches: [ "master" ]
 
@@ -10,7 +11,7 @@ jobs:
   build:
     strategy:
       matrix:
-        configuration: [Debug, Release]
+        configuration: [Debug]
 
     runs-on: windows-latest
 
@@ -87,3 +88,66 @@ jobs:
       with:
         name: LGB-Parser-Linux-Executable-${{ matrix.configuration }}
         path: ./publish/linux-x64/
+
+  # NEW: Release job that runs only for Release builds and version tags
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && matrix.configuration == 'Release'
+    strategy:
+      matrix:
+        configuration: [Release]
+    
+    steps:
+    - name: Download Windows artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: LGB-Parser-Windows-Release
+        path: ./release-assets/
+
+    - name: Download Linux artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: LGB-Parser-Linux-Release
+        path: ./release-assets/
+
+    - name: Get version from tag
+      id: version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        name: "LGB Parser ${{ steps.version.outputs.VERSION }}"
+        body: |
+          ## LGB Parser Release ${{ steps.version.outputs.VERSION }}
+          
+          ### Changes
+          - Optimized memory management and performance
+          - Improved Lumina integration
+          - Enhanced JSON export functionality
+          - Cross-platform support (Windows/Linux)
+          
+          ### Downloads
+          - **Windows**: Download `LGB-Parser-win-x64-Release.zip`
+          - **Linux**: Download `LGB-Parser-linux-x64-Release.tar.gz`
+          
+          ### Installation
+          1. Download the appropriate file for your platform
+          2. Extract the archive
+          3. Run the executable from command line
+          
+          ### Usage
+          ```
+          lgb-parser --game "C:\Path\To\FFXIV" --batch output_folder json
+          ```
+          
+          See the README for full documentation.
+        draft: false
+        prerelease: false
+        files: |
+          ./release-assets/LGB-Parser-win-x64-Release.zip
+          ./release-assets/LGB-Parser-linux-x64-Release.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
